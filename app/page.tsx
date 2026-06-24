@@ -42,6 +42,10 @@ type Task = {
   status: string;
 };
 
+type MeetingParticipantRow = {
+  employees: Employee | Employee[] | null;
+};
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
@@ -809,9 +813,10 @@ async function loadMeetingParticipants(meetingId: number) {
     return;
   }
 
-  const participants = data
-  ?.map((item: any) => item.employees)
-  ?.filter(Boolean) || [];
+  const participants =
+    (data as MeetingParticipantRow[] | null)
+      ?.flatMap((item) => item.employees || [])
+      ?.filter((employee): employee is Employee => Boolean(employee)) || [];
   setCurrentParticipants(participants);
 }
   function openMeeting(meeting: Meeting) {
@@ -1299,58 +1304,21 @@ setOpenEmployeeMenuId(null);
 
 
   
-    <div className="space-y-3">
+   <div className="space-y-3">
       {filteredTasks.map((task) => (
        <div
   key={task.id}
   onClick={() => toggleTaskStatus(task)}
-  className={`border rounded p-3 cursor-pointer transition ${
+  className={`relative border rounded p-3 pr-12 cursor-pointer transition ${
     task.status === "Fait"
       ? "bg-green-100 border-green-300"
       : "bg-white"
   }`}
 >
-  <div className="flex justify-end">
-  <button
-    onClick={(e) => {
-      e.stopPropagation();
-      setOpenTaskMenuId(
-        openTaskMenuId === task.id ? null : task.id
-      );
-    }}
-    className="text-gray-500 hover:text-black"
-  >
-    ⋯
-  </button>
-</div>
-          <p className="font-semibold">
-  {task.status === "Fait" ? "✅ " : "⬜ "}
-  {task.action}
-</p>
-
-          <p className="text-sm text-gray-600">
-            Responsable : {task.responsible || "Non mentionné"}
-          </p>
-
-          <div className="text-sm text-gray-600">
-  <label className="mr-2">Échéance :</label>
-
-  <input
-    type="date"
-    value={task.due_date || ""}
-    onClick={(e) => e.stopPropagation()}
-    onChange={(e) =>
-      updateTaskDueDate(task.id, e.target.value)
-    }
-    className="border rounded px-2 py-1 text-sm"
-  />
-</div>
-
-          <p className="text-sm text-gray-600">
-            Statut : {task.status}
-          </p>
           <button
   type="button"
+  aria-label={`Ouvrir le menu de la tâche ${task.action}`}
+  aria-expanded={openTaskMenuId === task.id}
   onClick={(e) => {
     e.stopPropagation();
     setOpenTaskMenuId(openTaskMenuId === task.id ? null : task.id);
@@ -1359,10 +1327,11 @@ setOpenEmployeeMenuId(null);
 >
   ⋯
 </button>
+
           {openTaskMenuId === task.id && (
   <div
     onClick={(e) => e.stopPropagation()}
-    className="absolute right-3 top-10 bg-white border rounded shadow-lg z-50 min-w-[220px]"
+    className="absolute right-3 top-10 bg-white border rounded shadow-lg z-50 min-w-[220px] overflow-hidden"
   >
     <button
       type="button"
@@ -1374,6 +1343,17 @@ setOpenEmployeeMenuId(null);
       className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
     >
       📅 Ajouter au calendrier
+    </button>
+
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        deleteTask(task.id);
+      }}
+      className="block w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-gray-100"
+    >
+      🗑 Supprimer la tâche
     </button>
 
     <button
@@ -1396,7 +1376,6 @@ setOpenEmployeeMenuId(null);
         if (!employeeId) return;
 
         updateTaskResponsible(task, employeeId);
-        setOpenTaskMenuId(null);
       }}
       className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
     >
@@ -1408,7 +1387,6 @@ setOpenEmployeeMenuId(null);
       onClick={(e) => {
         e.stopPropagation();
         askAndUpdateTaskDueDate(task);
-        setOpenTaskMenuId(null);
       }}
       className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
     >
@@ -1426,21 +1404,37 @@ setOpenEmployeeMenuId(null);
     >
       📩 Envoyer au responsable
     </button>
-
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        deleteTask(task.id);
-        setOpenTaskMenuId(null);
-      }}
-      className="block w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-gray-100"
-    >
-      🗑 Supprimer la tâche
-    </button>
   </div>
 )}
-          
+
+          <p className="font-semibold">
+  {task.status === "Fait" ? "✅ " : "⬜ "}
+  {task.action}
+</p>
+
+          <p className="text-sm text-gray-600">
+            Responsable : {task.responsible || "Non mentionné"}
+          </p>
+
+          <div
+            className="text-sm text-gray-600"
+            onClick={(e) => e.stopPropagation()}
+          >
+  <label className="mr-2">Échéance :</label>
+
+  <input
+    type="date"
+    value={task.due_date || ""}
+    onChange={(e) =>
+      updateTaskDueDate(task.id, e.target.value)
+    }
+    className="border rounded px-2 py-1 text-sm"
+  />
+</div>
+
+          <p className="text-sm text-gray-600">
+            Statut : {task.status}
+          </p>
         </div>
                  ))}
     </div>
@@ -1477,7 +1471,7 @@ setOpenEmployeeMenuId(null);
         : "border"
     }`}
   >
-    Aujourd'hui
+    Aujourd&apos;hui
   </button>
 
   <button
