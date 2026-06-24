@@ -396,6 +396,20 @@ async function deleteEmployee(id: number) {
     return rowWithoutConfidence;
   }
 
+  function normalizeTaskDueDate(dueDate: string | null | undefined) {
+    if (!dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+      return null;
+    }
+
+    const parsedDate = new Date(`${dueDate}T00:00:00`);
+
+    if (Number.isNaN(parsedDate.getTime())) {
+      return null;
+    }
+
+    return dueDate;
+  }
+
   async function saveTasks(meetingId: number, tasks: TaskFromAI[] = []) {
   if (!tasks || tasks.length === 0) return;
 
@@ -408,7 +422,7 @@ async function deleteEmployee(id: number) {
     responsible: assignment.employee?.name || null,
     responsible_employee_id: assignment.employee?.id || null,
     responsible_confidence: assignment.confidence,
-    due_date: task.due_date || null,
+    due_date: normalizeTaskDueDate(task.due_date),
     status: "À faire",
   };
 });
@@ -908,6 +922,36 @@ function getTaskConfidenceLabel(confidence: number | null | undefined) {
   }
 
   return `Confiance ${confidence}%`;
+}
+
+function getLocalDateIso(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function getTaskDueDateClass(task: Task) {
+  if (task.status === "Fait") {
+    return "bg-green-100 border-green-300";
+  }
+
+  if (!task.due_date) {
+    return "bg-white";
+  }
+
+  const today = getLocalDateIso();
+
+  if (task.due_date < today) {
+    return "bg-red-50 border-red-300";
+  }
+
+  if (task.due_date === today) {
+    return "bg-orange-50 border-orange-300";
+  }
+
+  return "bg-green-50 border-green-300";
 }
 
 async function askAndUpdateTaskDueDate(task: Task) {
@@ -1542,11 +1586,9 @@ closeAllMenus();
        <div
   key={task.id}
   onClick={() => toggleTaskStatus(task)}
-  className={`relative border rounded p-3 pr-12 cursor-pointer transition ${
-    task.status === "Fait"
-      ? "bg-green-100 border-green-300"
-      : "bg-white"
-  }`}
+  className={`relative border rounded p-3 pr-12 cursor-pointer transition ${getTaskDueDateClass(
+    task
+  )}`}
 >
           <button
   type="button"

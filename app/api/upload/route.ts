@@ -34,6 +34,12 @@ const employees = employeesRaw
     });
 
     const transcriptionText = transcription.text.trim();
+    const today = new Date();
+    const referenceDate = today.toISOString().slice(0, 10);
+    const referenceWeekday = new Intl.DateTimeFormat("fr-FR", {
+      weekday: "long",
+      timeZone: "Europe/Paris",
+    }).format(today);
 
     if (
       !transcriptionText ||
@@ -68,7 +74,7 @@ Analyse la transcription et retourne uniquement un JSON valide avec cette struct
     "responsible": "Nom du responsable si identifiable",
     "responsible_employee_id": 1,
     "responsible_confidence": 85,
-    "due_date": "Échéance si identifiable"
+    "due_date": "YYYY-MM-DD ou null"
   }
 ]
 }
@@ -92,6 +98,24 @@ Barème de confiance :
 - 0 à 59 : doute, ambiguïté ou rôle insuffisamment cohérent.
 
 N'invente jamais d'identifiant.
+
+Gestion des échéances :
+
+La date de référence de la réunion est ${referenceDate} (${referenceWeekday}).
+
+Pour chaque tâche, due_date doit être :
+- une date ISO au format YYYY-MM-DD si une échéance est détectée ;
+- null si aucune échéance n'est détectée.
+
+Convertis les échéances relatives en date ISO avec la date de référence :
+- "aujourd'hui" = ${referenceDate}
+- "demain" = le jour suivant la date de référence
+- un jour de semaine cité, par exemple "vendredi", = le prochain jour correspondant après ou égal à la date de référence
+- "lundi prochain" = le prochain lundi strictement après la semaine courante
+- "dans une semaine" = date de référence + 7 jours
+- "avant la fin du mois" = dernier jour du mois de la date de référence
+
+N'invente jamais d'échéance. Si la transcription ne contient pas d'indice temporel clair pour la tâche, mets due_date à null.
 
 Règles :
 
@@ -153,6 +177,8 @@ Ne regroupe pas plusieurs actions ensemble.
 Si une personne responsable est mentionnée, indique son prénom ou son nom.
 
 Si une échéance est mentionnée, indique-la.
+
+Toute échéance dans tasks.due_date doit être convertie en YYYY-MM-DD. Ne retourne jamais "demain", "vendredi", "fin du mois" ou une autre expression textuelle dans due_date.
 
 N’invente jamais de personne, d’échéance ou d’action.
 
