@@ -55,6 +55,7 @@ const GENERATING_REPORT_MESSAGE = "Génération du compte rendu en cours...";
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
+  const [editedReport, setEditedReport] = useState("");
   const [reportError, setReportError] = useState("");
   const [currentTitle, setCurrentTitle] = useState("");
   const [currentMeetingId, setCurrentMeetingId] = useState<number | null>(null);
@@ -74,11 +75,24 @@ export default function Home() {
 const [emailStatus, setEmailStatus] = useState("");
 const [showEmailModal, setShowEmailModal] = useState(false);
 const [showParticipantsModal, setShowParticipantsModal] = useState(false);
+const [showBulkTasksModal, setShowBulkTasksModal] = useState(false);
 const [emailRecipients, setEmailRecipients] = useState<number[]>([]);
 const [pendingParticipantIds, setPendingParticipantIds] = useState<number[]>([]);
+const [selectedBulkTaskIds, setSelectedBulkTaskIds] = useState<number[]>([]);
+const [bulkTaskSource, setBulkTaskSource] = useState<Task[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeSection, setActiveSection] = useState<AppSection>("new");
+  const [openedHistoryMeetingId, setOpenedHistoryMeetingId] = useState<
+    number | null
+  >(null);
+  const [historyTitle, setHistoryTitle] = useState("");
+  const [historyDate, setHistoryDate] = useState("");
+  const [historyMessage, setHistoryMessage] = useState("");
+  const [historyParticipants, setHistoryParticipants] = useState<Employee[]>([]);
+  const [historyTasks, setHistoryTasks] = useState<Task[]>([]);
+  const [isEditingHistory, setIsEditingHistory] = useState(false);
+  const [editedHistoryReport, setEditedHistoryReport] = useState("");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -739,7 +753,7 @@ async function saveEditedReport() {
   const { error } = await supabase
     .from("meetings")
     .update({
-      report: message,
+      report: editedReport,
     })
     .eq("id", currentMeetingId);
 
@@ -750,6 +764,8 @@ async function saveEditedReport() {
   }
 
   await loadMeetings();
+  setMessage(editedReport);
+  setEditedReport("");
   setIsEditing(false);
 }
   function downloadPDF(
@@ -767,6 +783,133 @@ async function saveEditedReport() {
     doc.text(lines, 15, 35);
 
     doc.save(fileName);
+  }
+
+  function buildCurrentReportPdfContent() {
+    const participantsText =
+      currentParticipants.length > 0
+        ? currentParticipants
+            .map((participant) => {
+              const role = participant.role ? ` (${participant.role})` : "";
+              return `${participant.name}${role}`;
+            })
+            .join(", ")
+        : "Aucun participant renseigné";
+    const tasksText =
+      tasks.length > 0
+        ? tasks
+            .map(
+              (task) =>
+                `- ${task.action}\n  Responsable : ${
+                  task.responsible || "Non attribué"
+                }\n  Échéance : ${
+                  task.due_date || "Non renseignée"
+                }\n  Statut : ${task.status}`
+            )
+            .join("\n")
+        : "Aucune tâche détectée";
+
+    return [
+      currentMeetingDate ? `Date : ${currentMeetingDate}` : "",
+      `Participants : ${participantsText}`,
+      "",
+      message,
+      "",
+      "Tâches détectées",
+      tasksText,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function downloadCurrentReportPDF() {
+    downloadPDF(
+      buildCurrentReportPdfContent(),
+      currentTitle || "Compte rendu de réunion",
+      currentMeetingId
+        ? `compte-rendu-${currentMeetingId}.pdf`
+        : "compte-rendu-reunion.pdf"
+    );
+  }
+
+  async function saveEditedHistoryReport() {
+    if (!openedHistoryMeetingId) {
+      setIsEditingHistory(false);
+      return;
+    }
+
+    const { error } = await supabase
+      .from("meetings")
+      .update({
+        report: editedHistoryReport,
+      })
+      .eq("id", openedHistoryMeetingId);
+
+    if (error) {
+      console.error(error);
+      alert("Erreur lors de la sauvegarde.");
+      return;
+    }
+
+    setHistoryMessage(editedHistoryReport);
+    setEditedHistoryReport("");
+    setIsEditingHistory(false);
+    await loadMeetings();
+  }
+
+  function downloadHistoryReportPDF() {
+    const previousTitle = currentTitle;
+    const previousDate = currentMeetingDate;
+    const previousParticipants = currentParticipants;
+    const previousMessage = message;
+    const previousTasks = tasks;
+
+    setCurrentTitle(historyTitle);
+    setCurrentMeetingDate(historyDate);
+    setCurrentParticipants(historyParticipants);
+    setMessage(historyMessage);
+    setTasks(historyTasks);
+    downloadPDF(
+      [
+        historyDate ? `Date : ${historyDate}` : "",
+        `Participants : ${
+          historyParticipants.length > 0
+            ? historyParticipants.map((participant) => participant.name).join(", ")
+            : "Aucun participant renseigné"
+        }`,
+        "",
+        historyMessage,
+        "",
+        "Tâches détectées",
+        historyTasks.length > 0
+          ? historyTasks
+              .map(
+                (task) =>
+                  `- ${task.action}\n  Responsable : ${
+                    task.responsible || "Non attribué"
+                  }\n  Échéance : ${
+                    task.due_date || "Non renseignée"
+                  }\n  Statut : ${task.status}`
+              )
+              .join("\n")
+          : "Aucune tâche détectée",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      historyTitle || "Compte rendu de réunion",
+      openedHistoryMeetingId
+        ? `compte-rendu-${openedHistoryMeetingId}.pdf`
+        : "compte-rendu-reunion.pdf"
+    );
+    setCurrentTitle(previousTitle);
+    setCurrentMeetingDate(previousDate);
+    setCurrentParticipants(previousParticipants);
+    setMessage(previousMessage);
+    setTasks(previousTasks);
+  }
+
+  function openHistoryBulkTasksModal() {
+    sendAllPendingTasks(historyTasks);
   }
   async function loadMeetingTasks(meetingId: number) {
   const { data, error } = await supabase
@@ -1125,6 +1268,126 @@ BriefLy`;
 
   alert("Tâche envoyée au responsable.");
 }
+function getPendingTasksByResponsible(
+  selectedTaskIds?: number[],
+  sourceTasks: Task[] = tasks
+) {
+  const pendingTasks = sourceTasks.filter((task) => task.status !== "Fait");
+  const tasksByEmployee = new Map<Employee, Task[]>();
+  const ignoredTasks: string[] = [];
+
+  pendingTasks.forEach((task) => {
+    if (selectedTaskIds && !selectedTaskIds.includes(task.id)) {
+      return;
+    }
+
+    const responsibleEmployee = task.responsible_employee_id
+      ? employees.find((employee) => employee.id === task.responsible_employee_id)
+      : null;
+
+    if (!responsibleEmployee) {
+      ignoredTasks.push(`${task.action} : aucun responsable assigné`);
+      return;
+    }
+
+    if (!responsibleEmployee.email?.trim()) {
+      ignoredTasks.push(
+        `${task.action} : aucun email pour ${responsibleEmployee.name}`
+      );
+      return;
+    }
+
+    const currentTasks = tasksByEmployee.get(responsibleEmployee) || [];
+    tasksByEmployee.set(responsibleEmployee, [...currentTasks, task]);
+  });
+
+  return { tasksByEmployee, ignoredTasks, pendingTasks };
+}
+
+function sendAllPendingTasks(sourceTasks: Task[] = tasks) {
+  const pendingTasks = sourceTasks.filter((task) => task.status !== "Fait");
+
+  if (pendingTasks.length === 0) {
+    setEmailStatus("Aucune tâche à faire à envoyer.");
+    return;
+  }
+
+  setBulkTaskSource(sourceTasks);
+  setSelectedBulkTaskIds(pendingTasks.map((task) => task.id));
+  setShowBulkTasksModal(true);
+}
+
+async function confirmSendSelectedTasks() {
+  const { tasksByEmployee, ignoredTasks, pendingTasks } =
+    getPendingTasksByResponsible(selectedBulkTaskIds, bulkTaskSource);
+  const uncheckedCount = pendingTasks.filter(
+    (task) => !selectedBulkTaskIds.includes(task.id)
+  ).length;
+  const ignoredCount = ignoredTasks.length + uncheckedCount;
+
+  if (tasksByEmployee.size === 0) {
+    setEmailStatus(
+      `Aucune tâche envoyée. ${ignoredCount} tâche(s) ignorée(s).`
+    );
+    setShowBulkTasksModal(false);
+    return;
+  }
+
+  try {
+    setEmailStatus("Envoi des tâches en cours...");
+
+    for (const [employee, employeeTasks] of tasksByEmployee) {
+      const taskList = employeeTasks
+        .map(
+          (task, index) =>
+            `${index + 1}. ${task.action}\n   Échéance : ${
+              task.due_date || "Non renseignée"
+            }\n   Statut : ${task.status}`
+        )
+        .join("\n\n");
+
+      const response = await fetch("/api/send-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          emails: [employee.email],
+          title: currentTitle || "Compte rendu de réunion",
+          subject: `Tâches à faire - ${currentTitle || "Réunion"}`,
+          report: `Bonjour ${employee.name},
+
+Voici vos tâches à faire suite à la réunion "${
+            currentTitle || "Réunion sans titre"
+          }".
+
+${taskList}
+
+Cordialement,
+Briefly`,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Erreur pendant l'envoi des tâches.");
+      }
+    }
+
+    const ignoredMessage =
+      ignoredTasks.length > 0
+        ? ` ${ignoredTasks.length} tâche(s) ignorée(s) : ${ignoredTasks.join(
+            " ; "
+          )}`
+        : "";
+
+    setEmailStatus(`${tasksByEmployee.size} emails envoyés, ${ignoredCount} tâches ignorées.${ignoredMessage}`);
+    setShowBulkTasksModal(false);
+  } catch (error) {
+    console.error(error);
+    setEmailStatus("Erreur pendant l'envoi des tâches.");
+  }
+}
 function downloadTaskCalendar(task: Task) {
   const title = task.action;
   const description = `Responsable : ${
@@ -1168,7 +1431,22 @@ END:VCALENDAR`;
 
   URL.revokeObjectURL(url);
 }
-async function loadMeetingParticipants(meetingId: number) {
+async function loadHistoryMeetingTasks(meetingId: number) {
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("meeting_id", meetingId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    console.error(error);
+    return;
+  }
+
+  setHistoryTasks(data || []);
+}
+
+async function loadHistoryMeetingParticipants(meetingId: number) {
   const { data, error } = await supabase
     .from("meeting_participants")
     .select("employees(*)")
@@ -1183,18 +1461,34 @@ async function loadMeetingParticipants(meetingId: number) {
     (data as MeetingParticipantRow[] | null)
       ?.flatMap((item) => item.employees || [])
       ?.filter((employee): employee is Employee => Boolean(employee)) || [];
-  setCurrentParticipants(participants);
+  setHistoryParticipants(participants);
 }
-  function openMeeting(meeting: Meeting) {
-    loadMeetingTasks(meeting.id);
-  setCurrentMeetingId(meeting.id);
-  setCurrentTitle(meeting.title);
-  setReportError("");
-  setMessage(meeting.report);
-  setCurrentMeetingDate(
-  new Date(meeting.created_at).toLocaleString("fr-FR")
-);
-  loadMeetingParticipants(meeting.id);
+
+async function openHistoryMeetingInline(meeting: Meeting) {
+  closeAllMenus();
+  setOpenedHistoryMeetingId(meeting.id);
+  setHistoryTitle(meeting.title);
+  setHistoryDate(new Date(meeting.created_at).toLocaleString("fr-FR"));
+  setHistoryMessage(meeting.report);
+  setHistoryParticipants([]);
+  setHistoryTasks([]);
+  setIsEditingHistory(false);
+  setEditedHistoryReport("");
+  await Promise.all([
+    loadHistoryMeetingTasks(meeting.id),
+    loadHistoryMeetingParticipants(meeting.id),
+  ]);
+}
+
+function closeHistoryMeetingInline() {
+  setOpenedHistoryMeetingId(null);
+  setHistoryTitle("");
+  setHistoryDate("");
+  setHistoryMessage("");
+  setHistoryParticipants([]);
+  setHistoryTasks([]);
+  setIsEditingHistory(false);
+  setEditedHistoryReport("");
 }
 const filteredEmployees = employees.filter((employee) => {
   const search = employeeSearch.toLowerCase();
@@ -1584,17 +1878,27 @@ closeAllMenus();
       {message && message !== GENERATING_REPORT_MESSAGE && !reportError && (
   <div className="flex gap-3 mt-4">
     <button
-      onClick={() => setIsEditing(true)}
+      onClick={() => {
+        setEditedReport(message);
+        setIsEditing(true);
+      }}
       className="px-4 py-2 border rounded"
     >
-      Modifier
+      Modifier le compte rendu
     </button>
 
     <button
-      onClick={() => downloadPDF()}
+      onClick={downloadCurrentReportPDF}
       className="px-4 py-2 border rounded"
     >
       Télécharger en PDF
+    </button>
+
+    <button
+      onClick={() => sendAllPendingTasks()}
+      className="px-4 py-2 border rounded"
+    >
+      Envoyer toutes les tâches
     </button>
 
     <button
@@ -1635,6 +1939,7 @@ closeAllMenus();
         setCurrentParticipants([]);
         setMessage("");
         setReportError("");
+        setEditedReport("");
         setTasks([]);
         setIsEditing(false);
       }}
@@ -1716,8 +2021,8 @@ closeAllMenus();
     {isEditing ? (
       <div>
         <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
+          value={editedReport}
+          onChange={(e) => setEditedReport(e.target.value)}
           className="w-full min-h-[400px] border rounded p-3"
         />
 
@@ -1730,7 +2035,10 @@ closeAllMenus();
           </button>
 
           <button
-            onClick={() => setIsEditing(false)}
+            onClick={() => {
+              setEditedReport("");
+              setIsEditing(false);
+            }}
             className="px-4 py-2 border rounded"
           >
             Annuler
@@ -2071,7 +2379,6 @@ closeAllMenus();
 
           <div className="space-y-3">
             {filteredMeetings
-  .filter((meeting) => meeting.id !== currentMeetingId)
   .map((meeting) => (
               <div key={meeting.id} className="relative border rounded-lg p-4 pr-12">
                 <button
@@ -2106,7 +2413,7 @@ closeAllMenus();
                       onClick={(e) => {
                         e.stopPropagation();
                         closeAllMenus();
-                        openMeeting(meeting);
+                        openHistoryMeetingInline(meeting);
                       }}
                       className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
                     >
@@ -2153,7 +2460,7 @@ closeAllMenus();
                   <button
                     onClick={() => {
                       closeAllMenus();
-                      openMeeting(meeting);
+                      openHistoryMeetingInline(meeting);
                     }}
                     className="px-3 py-1 bg-black text-white rounded text-sm"
                   >
@@ -2184,6 +2491,132 @@ closeAllMenus();
                     Supprimer
                   </button>
                 </div>
+
+                {openedHistoryMeetingId === meeting.id && (
+                  <div className="mt-4 rounded border bg-gray-50 p-4">
+                    <div className="mb-4 flex items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-xl font-bold">{historyTitle}</h3>
+                        {historyDate && (
+                          <p className="text-sm text-gray-500">
+                            {historyDate}
+                          </p>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={closeHistoryMeetingInline}
+                        className="rounded border px-3 py-1 text-sm"
+                      >
+                        Fermer
+                      </button>
+                    </div>
+
+                    <div className="mb-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditedHistoryReport(historyMessage);
+                          setIsEditingHistory(true);
+                        }}
+                        className="rounded border px-3 py-1 text-sm"
+                      >
+                        Modifier
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={downloadHistoryReportPDF}
+                        className="rounded border px-3 py-1 text-sm"
+                      >
+                        PDF
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={openHistoryBulkTasksModal}
+                        className="rounded border px-3 py-1 text-sm"
+                      >
+                        Envoyer toutes les tâches
+                      </button>
+                    </div>
+
+                    {historyParticipants.length > 0 && (
+                      <div className="mb-4 rounded border bg-white p-3">
+                        <p className="mb-2 font-semibold">
+                          Participants présents :
+                        </p>
+                        <ul className="list-inside list-disc text-sm text-gray-700">
+                          {historyParticipants.map((participant) => (
+                            <li key={participant.id}>
+                              {participant.name}
+                              {participant.role ? ` (${participant.role})` : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {isEditingHistory ? (
+                      <div>
+                        <textarea
+                          value={editedHistoryReport}
+                          onChange={(e) => setEditedHistoryReport(e.target.value)}
+                          className="min-h-[300px] w-full rounded border p-3"
+                        />
+
+                        <div className="mt-3 flex gap-3">
+                          <button
+                            type="button"
+                            onClick={saveEditedHistoryReport}
+                            className="rounded bg-black px-4 py-2 text-white"
+                          >
+                            Enregistrer
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditedHistoryReport("");
+                              setIsEditingHistory(false);
+                            }}
+                            className="rounded border px-4 py-2"
+                          >
+                            Annuler
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="whitespace-pre-wrap text-sm">
+                        {historyMessage}
+                      </div>
+                    )}
+
+                    {historyTasks.length > 0 && (
+                      <div className="mt-4 rounded border bg-white p-3">
+                        <h4 className="mb-2 font-semibold">Tâches</h4>
+                        <div className="space-y-2">
+                          {historyTasks.map((task) => (
+                            <div key={task.id} className="rounded border p-2">
+                              <p className="font-medium">{task.action}</p>
+                              <p className="text-sm text-gray-600">
+                                Responsable :{" "}
+                                {task.responsible || "Non attribué"}
+                              </p>
+                              <p className="text-sm text-gray-600">
+                                Échéance : {task.due_date || "Non renseignée"}
+                              </p>
+                              <p className="text-sm text-gray-600">
+                                Statut : {task.status}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -2191,6 +2624,132 @@ closeAllMenus();
           )}
         </section>
       )}
+{showBulkTasksModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-lg bg-white p-6">
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <h2 className="text-2xl font-bold">Envoyer toutes les tâches</h2>
+
+        <button
+          type="button"
+          onClick={() => setShowBulkTasksModal(false)}
+          className="rounded border px-3 py-1"
+        >
+          Fermer
+        </button>
+      </div>
+
+      {(() => {
+        const pendingTasks = bulkTaskSource.filter(
+          (task) => task.status !== "Fait"
+        );
+        const groupedTasks = new Map<
+          string,
+          { employee: Employee | null; label: string; tasks: Task[] }
+        >();
+
+        pendingTasks.forEach((task) => {
+          const employee = task.responsible_employee_id
+            ? employees.find(
+                (currentEmployee) =>
+                  currentEmployee.id === task.responsible_employee_id
+              ) || null
+            : null;
+          const key = employee?.id ? `employee-${employee.id}` : `task-${task.id}`;
+          const label = employee?.name || task.responsible || "Non attribué";
+          const currentGroup = groupedTasks.get(key) || {
+            employee,
+            label,
+            tasks: [],
+          };
+
+          groupedTasks.set(key, {
+            ...currentGroup,
+            tasks: [...currentGroup.tasks, task],
+          });
+        });
+
+        if (pendingTasks.length === 0) {
+          return (
+            <p className="text-sm text-gray-600">
+              Aucune tâche à faire à envoyer.
+            </p>
+          );
+        }
+
+        return (
+          <div className="space-y-4">
+            {[...groupedTasks.values()].map((group) => {
+              const hasEmail = Boolean(group.employee?.email?.trim());
+
+              return (
+                <div key={group.label} className="rounded border p-4">
+                  <div className="mb-3">
+                    <p className="font-semibold">{group.label}</p>
+                    <p
+                      className={`text-sm ${
+                        hasEmail ? "text-gray-600" : "text-red-600"
+                      }`}
+                    >
+                      {hasEmail ? group.employee?.email : "Email manquant"}
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    {group.tasks.map((task) => (
+                      <label key={task.id} className="flex gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={selectedBulkTaskIds.includes(task.id)}
+                          disabled={!hasEmail}
+                          onChange={() => {
+                            if (selectedBulkTaskIds.includes(task.id)) {
+                              setSelectedBulkTaskIds(
+                                selectedBulkTaskIds.filter((id) => id !== task.id)
+                              );
+                            } else {
+                              setSelectedBulkTaskIds([
+                                ...selectedBulkTaskIds,
+                                task.id,
+                              ]);
+                            }
+                          }}
+                        />
+
+                        <span>
+                          {task.action}
+                          {task.due_date ? ` - ${task.due_date}` : ""}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      <div className="mt-6 flex justify-end gap-3">
+        <button
+          type="button"
+          onClick={() => setShowBulkTasksModal(false)}
+          className="rounded border px-4 py-2"
+        >
+          Annuler
+        </button>
+
+        <button
+          type="button"
+          onClick={confirmSendSelectedTasks}
+          className="rounded bg-black px-4 py-2 text-white"
+        >
+          Envoyer les tâches cochées
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 {showParticipantsModal && (
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
     <div className="w-full max-w-2xl rounded-lg bg-white p-6">
