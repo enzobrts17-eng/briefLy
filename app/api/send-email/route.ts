@@ -4,7 +4,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function POST(request: Request) {
   try {
-    const { emails, title, report } = await request.json();
+    const { emails, title, report, subject } = await request.json();
 
     if (!emails || emails.length === 0) {
       return Response.json(
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
     const { data, error } = await resend.emails.send({
       from: "BriefLy <onboarding@resend.dev>",
       to: emails,
-      subject: `Compte rendu - ${title}`,
+      subject: subject || `Compte rendu - ${title}`,
       text: report,
     });
 

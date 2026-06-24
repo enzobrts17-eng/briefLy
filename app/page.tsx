@@ -91,11 +91,20 @@ const [employeeForm, setEmployeeForm] = useState({
   role: "",
   email: "",
 });
+const [newResponsibleTaskId, setNewResponsibleTaskId] = useState<number | null>(
+  null
+);
+const [newResponsibleForm, setNewResponsibleForm] = useState({
+  name: "",
+  role: "",
+  email: "",
+});
   const closeAllMenus = useCallback(() => {
     setOpenTaskMenuId(null);
     setOpenMeetingMenuId(null);
     setOpenEmployeeMenuId(null);
     setOpenTrashMeetingMenuId(null);
+    setNewResponsibleTaskId(null);
   }, []);
 
   useEffect(() => {
@@ -882,6 +891,90 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
   closeAllMenus();
 }
 
+async function createResponsibleAndAssignTask(task: Task) {
+  if (!newResponsibleForm.name.trim()) {
+    alert("Le nom du responsable est obligatoire.");
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("employees")
+    .insert({
+      name: newResponsibleForm.name.trim(),
+      role: newResponsibleForm.role.trim(),
+      email: newResponsibleForm.email.trim(),
+    })
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    console.error(error);
+    alert("Erreur lors de la création du responsable.");
+    return;
+  }
+
+  const newEmployee = data as Employee;
+  const updatePayload = {
+    responsible: newEmployee.name,
+    responsible_employee_id: newEmployee.id,
+    responsible_confidence: 100,
+  };
+
+  const { error: updateError } = await supabase
+    .from("tasks")
+    .update(updatePayload)
+    .eq("id", task.id);
+
+  if (updateError) {
+    if (isMissingResponsibleConfidenceColumnError(updateError)) {
+      const { error: fallbackError } = await supabase
+        .from("tasks")
+        .update(removeResponsibleConfidence(updatePayload))
+        .eq("id", task.id);
+
+      if (fallbackError) {
+        console.error(fallbackError);
+        alert("Le collaborateur a été créé, mais la tâche n'a pas pu être assignée.");
+        setEmployees((currentEmployees) =>
+          [...currentEmployees, newEmployee].sort((a, b) =>
+            a.name.localeCompare(b.name)
+          )
+        );
+        return;
+      }
+    } else {
+      console.error(updateError);
+      alert("Le collaborateur a été créé, mais la tâche n'a pas pu être assignée.");
+      setEmployees((currentEmployees) =>
+        [...currentEmployees, newEmployee].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        )
+      );
+      return;
+    }
+  }
+
+  setEmployees((currentEmployees) =>
+    [...currentEmployees, newEmployee].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )
+  );
+  setTasks((currentTasks) =>
+    currentTasks.map((currentTask) =>
+      currentTask.id === task.id
+        ? {
+            ...currentTask,
+            responsible: newEmployee.name,
+            responsible_employee_id: newEmployee.id,
+            responsible_confidence: 100,
+          }
+        : currentTask
+    )
+  );
+  setNewResponsibleForm({ name: "", role: "", email: "" });
+  closeAllMenus();
+}
+
 function getTaskResponsibleEmployeeId(task: Task) {
   if (task.responsible_employee_id) {
     return task.responsible_employee_id;
@@ -898,30 +991,6 @@ function getTaskResponsibleEmployeeId(task: Task) {
       (employee) => employee.name.toLowerCase().trim() === responsibleName
     )?.id || ""
   );
-}
-
-function getTaskConfidenceBadgeClass(confidence: number | null | undefined) {
-  if (confidence === null || confidence === undefined) {
-    return "bg-gray-100 text-gray-600 border-gray-200";
-  }
-
-  if (confidence >= 80) {
-    return "bg-green-100 text-green-700 border-green-200";
-  }
-
-  if (confidence >= 60) {
-    return "bg-orange-100 text-orange-700 border-orange-200";
-  }
-
-  return "bg-red-100 text-red-700 border-red-200";
-}
-
-function getTaskConfidenceLabel(confidence: number | null | undefined) {
-  if (confidence === null || confidence === undefined) {
-    return "Score indisponible";
-  }
-
-  return `Confiance ${confidence}%`;
 }
 
 function getLocalDateIso(date = new Date()) {
@@ -966,27 +1035,55 @@ async function askAndUpdateTaskDueDate(task: Task) {
   closeAllMenus();
 }
 async function sendTaskToResponsible(task: Task) {
-  if (!task.responsible) {
+  if (!task.responsible_employee_id && !task.responsible) {
     alert("Aucun responsable identifié pour cette tâche.");
     return;
   }
 
-  const responsibleName = task.responsible.toLowerCase().trim();
+  const responsibleEmployee = task.responsible_employee_id
+    ? employees.find((employee) => employee.id === task.responsible_employee_id)
+    : employees.find((employee) => {
+        const employeeName = employee.name.toLowerCase().trim();
+        const responsibleName = task.responsible?.toLowerCase().trim() || "";
 
-const responsibleEmployee = employees.find((employee) => {
-  const employeeName = employee.name.toLowerCase().trim();
+        return (
+          employeeName === responsibleName ||
+          employeeName.includes(responsibleName) ||
+          responsibleName.includes(employeeName)
+        );
+      });
 
-  return (
-    employeeName === responsibleName ||
-    employeeName.includes(responsibleName) ||
-    responsibleName.includes(employeeName)
-  );
-});
-
-  if (!responsibleEmployee || !responsibleEmployee.email) {
-    alert("Aucun email trouvé pour ce responsable.");
+  if (!responsibleEmployee) {
+    alert("Responsable introuvable dans la liste des collaborateurs.");
     return;
   }
+
+  if (!responsibleEmployee.email?.trim()) {
+    alert(
+      `Impossible d'envoyer la tâche : aucun email n'est renseigné pour ${responsibleEmployee.name}.`
+    );
+    return;
+  }
+
+  const meetingTitle = currentTitle || "Réunion sans titre";
+  const taskEmailBody = `Bonjour ${responsibleEmployee.name},
+
+Une tâche vous a été assignée suite à la réunion "${meetingTitle}".
+
+Réunion :
+${meetingTitle}
+
+Action à faire :
+${task.action}
+
+Échéance :
+${task.due_date || "Non renseignée"}
+
+Statut :
+${task.status}
+
+Cordialement,
+BriefLy`;
 
   const response = await fetch("/api/send-email", {
     method: "POST",
@@ -995,21 +1092,9 @@ const responsibleEmployee = employees.find((employee) => {
     },
     body: JSON.stringify({
       emails: [responsibleEmployee.email],
-      title: `Tâche assignée - ${currentTitle}`,
-      report: `
-Bonjour ${responsibleEmployee.name},
-
-Une tâche vous a été assignée suite à la réunion "${currentTitle}".
-
-Tâche :
-${task.action}
-
-Échéance :
-${task.due_date || "Non mentionnée"}
-
-Cordialement,
-BriefLy
-`,
+      title: meetingTitle,
+      subject: `Tâche assignée - ${meetingTitle}`,
+      report: taskEmailBody,
     }),
   });
 
@@ -1655,6 +1740,12 @@ closeAllMenus();
         onChange={(e) => {
           e.stopPropagation();
 
+          if (e.target.value === "new") {
+            setNewResponsibleTaskId(task.id);
+            setNewResponsibleForm({ name: "", role: "", email: "" });
+            return;
+          }
+
           const employeeId = Number(e.target.value);
 
           if (!employeeId) return;
@@ -1664,6 +1755,7 @@ closeAllMenus();
         className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900"
       >
         <option value="">Choisir un responsable</option>
+        <option value="new">Ajouter un nouveau responsable</option>
 
         {employees.map((employee) => (
           <option key={employee.id} value={employee.id}>
@@ -1671,6 +1763,77 @@ closeAllMenus();
           </option>
         ))}
       </select>
+
+      {newResponsibleTaskId === task.id && (
+        <div
+          className="mt-3 space-y-2 border-t border-gray-100 pt-3"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="text"
+            value={newResponsibleForm.name}
+            onChange={(e) =>
+              setNewResponsibleForm((currentForm) => ({
+                ...currentForm,
+                name: e.target.value,
+              }))
+            }
+            placeholder="Nom complet"
+            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+          />
+
+          <input
+            type="text"
+            value={newResponsibleForm.role}
+            onChange={(e) =>
+              setNewResponsibleForm((currentForm) => ({
+                ...currentForm,
+                role: e.target.value,
+              }))
+            }
+            placeholder="Rôle"
+            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+          />
+
+          <input
+            type="email"
+            value={newResponsibleForm.email}
+            onChange={(e) =>
+              setNewResponsibleForm((currentForm) => ({
+                ...currentForm,
+                email: e.target.value,
+              }))
+            }
+            placeholder="Email"
+            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+          />
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                createResponsibleAndAssignTask(task);
+              }}
+              className="flex-1 rounded bg-black px-3 py-1.5 text-sm text-white"
+            >
+              Créer et assigner
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setNewResponsibleTaskId(null);
+                setNewResponsibleForm({ name: "", role: "", email: "" });
+              }}
+              className="rounded border px-3 py-1.5 text-sm"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
     </div>
 
     <button
@@ -1703,18 +1866,8 @@ closeAllMenus();
   {task.action}
 </p>
 
-          <p className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
-            <span>
-              Responsable : {task.responsible || "Non attribué"}
-            </span>
-
-            <span
-              className={`rounded border px-2 py-0.5 text-xs font-medium ${getTaskConfidenceBadgeClass(
-                task.responsible_confidence
-              )}`}
-            >
-              {getTaskConfidenceLabel(task.responsible_confidence)}
-            </span>
+          <p className="text-sm text-gray-600">
+            Responsable : {task.responsible || "Non attribué"}
           </p>
 
           <div
