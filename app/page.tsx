@@ -50,9 +50,12 @@ type MeetingParticipantRow = {
 
 type AppSection = "new" | "report" | "history" | "collaborators";
 
+const GENERATING_REPORT_MESSAGE = "Génération du compte rendu en cours...";
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
+  const [reportError, setReportError] = useState("");
   const [currentTitle, setCurrentTitle] = useState("");
   const [currentMeetingId, setCurrentMeetingId] = useState<number | null>(null);
   const [currentParticipants, setCurrentParticipants] = useState<Employee[]>([]);
@@ -571,13 +574,15 @@ if (data) {
 
   async function handleUpload(participantIds: number[] = selectedEmployees) {
     if (!file) {
-      setMessage("Choisis ou enregistre un fichier audio.");
+      setReportError("Choisis ou enregistre un fichier audio.");
+      setMessage("");
       return;
     }
 
     try {
       setCurrentTitle("");
-      setMessage("Génération du compte rendu...");
+      setReportError("");
+      setMessage(GENERATING_REPORT_MESSAGE);
 
       const selectedParticipants = employees.filter((employee) =>
         participantIds.includes(employee.id)
@@ -613,10 +618,12 @@ if (data) {
       const data: ApiResponse = await response.json();
 
       if (!response.ok) {
-        setMessage(data.error || "Erreur pendant la génération.");
+        setReportError(data.error || "Erreur pendant la génération.");
+        setMessage("");
         return;
       }
 
+      setReportError("");
       setCurrentTitle(data.title);
 setMessage(data.report);
 
@@ -628,13 +635,24 @@ const savedMeetingId = await saveMeeting(
   participantIds
 );
 
-if (savedMeetingId) {
-  await loadMeetingTasks(savedMeetingId);
+if (!savedMeetingId) {
+  setReportError("Le compte rendu a été généré, mais la sauvegarde a échoué.");
+  setMessage("");
+  return;
 }
+
+await loadMeetingTasks(savedMeetingId);
+setCurrentMeetingId(savedMeetingId);
+setCurrentTitle(data.title);
+setMessage(data.report);
+setCurrentMeetingDate(new Date().toLocaleString("fr-FR"));
+setCurrentParticipants(selectedParticipants);
+setActiveSection("report");
       
     } catch (error) {
       console.error(error);
-      setMessage("Erreur lors de l'envoi.");
+      setReportError("Erreur lors de l'envoi.");
+      setMessage("");
     }
   }
 async function sendMeetingEmail(
@@ -679,7 +697,7 @@ if (emails.length === 0) {
   return;
 }
 
-  if (!message || message === "Génération du compte rendu...") {
+  if (!message || message === GENERATING_REPORT_MESSAGE) {
     setEmailStatus("Aucun compte rendu à envoyer.");
     return;
   }
@@ -1171,6 +1189,7 @@ async function loadMeetingParticipants(meetingId: number) {
     loadMeetingTasks(meeting.id);
   setCurrentMeetingId(meeting.id);
   setCurrentTitle(meeting.title);
+  setReportError("");
   setMessage(meeting.report);
   setCurrentMeetingDate(
   new Date(meeting.created_at).toLocaleString("fr-FR")
@@ -1309,11 +1328,12 @@ const filteredTasks = tasks.filter((task) => {
           onChange={(e) => {
             const selectedFile = e.target.files?.[0];
 
-            if (selectedFile) {
-              setFile(selectedFile);
-              setMessage("");
-              setCurrentTitle("");
-            }
+          if (selectedFile) {
+            setFile(selectedFile);
+            setMessage("");
+            setReportError("");
+            setCurrentTitle("");
+          }
           }}
           className="max-w-full text-sm"
         />
@@ -1532,13 +1552,36 @@ closeAllMenus();
         <section className="w-full max-w-3xl rounded-lg border p-6">
           <h2 className="mb-4 text-2xl font-bold">Compte rendu ouvert</h2>
 
-          {!message && (
+          {!message && !reportError && (
             <p className="text-sm text-gray-600">
               Aucun compte rendu n’est ouvert pour le moment.
             </p>
           )}
 
-      {message && message !== "Génération du compte rendu..." && (
+          {message === GENERATING_REPORT_MESSAGE && (
+            <p className="text-sm font-medium text-gray-700">
+              {GENERATING_REPORT_MESSAGE}
+            </p>
+          )}
+
+          {reportError && (
+            <div className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              <p>{reportError}</p>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSection("new");
+                  setReportError("");
+                }}
+                className="mt-3 rounded border border-red-300 bg-white px-3 py-1 text-red-700"
+              >
+                Revenir à Nouvelle réunion
+              </button>
+            </div>
+          )}
+
+      {message && message !== GENERATING_REPORT_MESSAGE && !reportError && (
   <div className="flex gap-3 mt-4">
     <button
       onClick={() => setIsEditing(true)}
@@ -1571,7 +1614,7 @@ closeAllMenus();
   </p>
 )}
 
-      {message && (
+      {message && message !== GENERATING_REPORT_MESSAGE && !reportError && (
   <div className="mt-8 max-w-3xl w-full border rounded-lg p-6 text-left">
     {currentTitle && (
   <div className="mb-4 flex items-start justify-between gap-4">
@@ -1585,12 +1628,13 @@ closeAllMenus();
     </div>
 
     <button
-      onClick={() => {
+    onClick={() => {
         setCurrentTitle("");
         setCurrentMeetingId(null);
         setCurrentMeetingDate("");
         setCurrentParticipants([]);
         setMessage("");
+        setReportError("");
         setTasks([]);
         setIsEditing(false);
       }}
@@ -2216,10 +2260,11 @@ closeAllMenus();
 
         <button
           type="button"
-          onClick={() => {
+          onClick={async () => {
             setSelectedEmployees(pendingParticipantIds);
             setShowParticipantsModal(false);
-            handleUpload(pendingParticipantIds);
+            setActiveSection("report");
+            await handleUpload(pendingParticipantIds);
           }}
           className="px-4 py-2 bg-black text-white rounded"
         >
