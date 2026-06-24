@@ -691,6 +691,24 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
   setOpenTaskMenuId(null);
 }
 
+function getTaskResponsibleEmployeeId(task: Task) {
+  if (task.responsible_employee_id) {
+    return task.responsible_employee_id;
+  }
+
+  const responsibleName = task.responsible?.toLowerCase().trim();
+
+  if (!responsibleName) {
+    return "";
+  }
+
+  return (
+    employees.find(
+      (employee) => employee.name.toLowerCase().trim() === responsibleName
+    )?.id || ""
+  );
+}
+
 async function askAndUpdateTaskDueDate(task: Task) {
   const dueDate = prompt(
     "Nouvelle échéance au format AAAA-MM-JJ :",
@@ -1356,31 +1374,38 @@ setOpenEmployeeMenuId(null);
       🗑 Supprimer la tâche
     </button>
 
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
+    <div className="border-t border-gray-100 px-3 py-2">
+      <label
+        htmlFor={`task-responsible-${task.id}`}
+        className="mb-1 block text-xs font-medium text-gray-600"
+      >
+        Modifier le responsable
+      </label>
 
-        const employeeId = Number(
-          prompt(
-            "ID du nouveau responsable :\n\n" +
-              employees
-                .map(
-                  (employee) =>
-                    `${employee.id} - ${employee.name} (${employee.role || "Sans poste"})`
-                )
-                .join("\n")
-          )
-        );
+      <select
+        id={`task-responsible-${task.id}`}
+        value={getTaskResponsibleEmployeeId(task)}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          e.stopPropagation();
 
-        if (!employeeId) return;
+          const employeeId = Number(e.target.value);
 
-        updateTaskResponsible(task, employeeId);
-      }}
-      className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-    >
-      Modifier le responsable
-    </button>
+          if (!employeeId) return;
+
+          updateTaskResponsible(task, employeeId);
+        }}
+        className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900"
+      >
+        <option value="">Choisir un responsable</option>
+
+        {employees.map((employee) => (
+          <option key={employee.id} value={employee.id}>
+            {employee.name} - {employee.role || "Sans rôle"}
+          </option>
+        ))}
+      </select>
+    </div>
 
     <button
       type="button"
