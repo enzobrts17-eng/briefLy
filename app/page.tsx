@@ -32,21 +32,27 @@ type ApiResponse = {
   tasks?: TaskFromAI[];
   error?: string;
 };
+
+type TaskStatus = "À faire" | "En cours" | "Fait";
+
 type Task = {
   id: number;
   meeting_id: number;
+  created_at?: string;
   action: string;
   responsible: string | null;
   responsible_employee_id?: number | null;
   due_date: string | null;
-  status: string;
+  status: TaskStatus;
+  completed_at?: string | null;
 };
 
 type MeetingParticipantRow = {
   employees: Employee | Employee[] | null;
 };
 
-type AppSection = "new" | "report" | "history" | "collaborators";
+type AppSection = "dashboard" | "new" | "report" | "history" | "collaborators";
+type DashboardPeriod = "week" | "month" | "year" | "all";
 
 const GENERATING_REPORT_MESSAGE = "Génération du compte rendu en cours...";
 
@@ -74,12 +80,22 @@ const [emailStatus, setEmailStatus] = useState("");
 const [showEmailModal, setShowEmailModal] = useState(false);
 const [showParticipantsModal, setShowParticipantsModal] = useState(false);
 const [showBulkTasksModal, setShowBulkTasksModal] = useState(false);
+const [showReminderModal, setShowReminderModal] = useState(false);
 const [emailRecipients, setEmailRecipients] = useState<number[]>([]);
 const [pendingParticipantIds, setPendingParticipantIds] = useState<number[]>([]);
 const [selectedBulkTaskIds, setSelectedBulkTaskIds] = useState<number[]>([]);
 const [bulkTaskSource, setBulkTaskSource] = useState<Task[]>([]);
+const [reminderTaskSource, setReminderTaskSource] = useState<Task[]>([]);
+const [selectedReminderTaskIds, setSelectedReminderTaskIds] = useState<number[]>(
+  []
+);
+const [showOtherReminderTasks, setShowOtherReminderTasks] = useState(false);
+const [reminderStatus, setReminderStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [dashboardTasks, setDashboardTasks] = useState<Task[]>([]);
+  const [dashboardPeriod, setDashboardPeriod] =
+    useState<DashboardPeriod>("month");
   const [activeSection, setActiveSection] = useState<AppSection>("new");
   const [openedHistoryMeetingId, setOpenedHistoryMeetingId] = useState<
     number | null
@@ -103,7 +119,9 @@ const [openTrashMeetingMenuId, setOpenTrashMeetingMenuId] = useState<
 const [selectedEmployeeProfile, setSelectedEmployeeProfile] =
   useState<Employee | null>(null);
 const [selectedResponsible, setSelectedResponsible] = useState("Tous");
-const [taskStatusFilter, setTaskStatusFilter] = useState<"all" | "done" | "todo">("all");
+const [taskStatusFilter, setTaskStatusFilter] = useState<
+  "all" | "done" | "progress" | "todo"
+>("all");
 const [currentMeetingDate, setCurrentMeetingDate] = useState("");
 const [showEmployeeModal, setShowEmployeeModal] = useState(false);
 const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
@@ -120,18 +138,23 @@ const [newResponsibleForm, setNewResponsibleForm] = useState({
   role: "",
   email: "",
 });
+const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+const [editedTaskAction, setEditedTaskAction] = useState("");
   const closeAllMenus = useCallback(() => {
     setOpenTaskMenuId(null);
     setOpenMeetingMenuId(null);
     setOpenEmployeeMenuId(null);
     setOpenTrashMeetingMenuId(null);
     setNewResponsibleTaskId(null);
+    setEditingTaskId(null);
+    setEditedTaskAction("");
   }, []);
 
   useEffect(() => {
     loadMeetings();
     loadDeletedMeetings();
     loadEmployees();
+    loadDashboardTasks();
   }, []);
 
   useEffect(() => {
@@ -199,6 +222,20 @@ const [newResponsibleForm, setNewResponsibleForm] = useState({
     }
 
     setEmployees(data || []);
+  }
+
+  async function loadDashboardTasks() {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    setDashboardTasks((data || []) as Task[]);
   }
 async function saveEmployeeForm() {
   if (!employeeForm.name.trim()) {
@@ -463,6 +500,19 @@ async function deleteEmployee(id: number) {
     return dueDate;
   }
 
+  function isMissingCompletedAtColumnError(error: unknown) {
+    if (!error || typeof error !== "object") {
+      return false;
+    }
+
+    const errorText = Object.values(error)
+      .filter((value) => typeof value === "string")
+      .join(" ")
+      .toLowerCase();
+
+    return errorText.includes("completed_at");
+  }
+
   async function saveTasks(meetingId: number, tasks: TaskFromAI[] = []) {
   if (!tasks || tasks.length === 0) return;
 
@@ -536,10 +586,11 @@ if (data) {
       }
     }
 
-   
-    await loadMeetings();
-    return data.id;
-  }
+	   
+	    await loadMeetings();
+	    await loadDashboardTasks();
+	    return data.id;
+	  }
 
   async function startRecording() {
     try {
@@ -773,58 +824,145 @@ async function saveEditedReport() {
   setEditedReport("");
   setIsEditing(false);
 }
+  function formatPdfDate(date: string | null | undefined) {
+    if (!date) {
+      return "Non renseignée";
+    }
+
+    return date;
+  }
+
+  function formatCompletedAt(date: string | null | undefined) {
+    if (!date) {
+      return "";
+    }
+
+    const parsedDate = new Date(date);
+
+    if (Number.isNaN(parsedDate.getTime())) {
+      return date;
+    }
+
+    return parsedDate.toLocaleString("fr-FR");
+  }
+
   function downloadPDF(
     report: string = message,
     title: string = currentTitle || "Compte rendu de réunion",
     fileName = "compte-rendu-reunion.pdf"
   ) {
     const doc = new jsPDF();
-    const lines = doc.splitTextToSize(report, 180);
+    const lines = doc.splitTextToSize(report, 180) as string[];
+    let y = 38;
 
+    doc.setFillColor(245, 247, 250);
+    doc.rect(0, 0, 210, 30, "F");
+    doc.setTextColor(20, 20, 20);
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
-    doc.text(title, 15, 20);
+    doc.text(title, 15, 18);
 
-    doc.setFontSize(11);
-    doc.text(lines, 15, 35);
+    lines.forEach((line) => {
+      if (y > 280) {
+        doc.addPage();
+        y = 20;
+      }
+
+      const isSectionTitle =
+        line === line.toUpperCase() && line.length > 3 && !line.startsWith("-");
+
+      if (isSectionTitle) {
+        y += y === 38 ? 0 : 4;
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(13);
+        doc.setTextColor(20, 20, 20);
+      } else {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10.5);
+        doc.setTextColor(50, 50, 50);
+      }
+
+      doc.text(line, 15, y);
+      y += isSectionTitle ? 8 : 6;
+    });
 
     doc.save(fileName);
   }
 
-  function buildCurrentReportPdfContent() {
+  function formatPdfTask(task: Task) {
+    return [
+      `- ${task.action}`,
+      `  Responsable : ${task.responsible || "Non attribué"}`,
+      `  Échéance : ${formatPdfDate(task.due_date)}`,
+      `  Statut : ${normalizeTaskStatus(task.status)}`,
+      task.completed_at ? `  Terminé le : ${formatCompletedAt(task.completed_at)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function buildReportPdfContent({
+    report,
+    date,
+    participants,
+    reportTasks,
+  }: {
+    report: string;
+    date: string;
+    participants: Employee[];
+    reportTasks: Task[];
+  }) {
     const participantsText =
-      currentParticipants.length > 0
-        ? currentParticipants
+      participants.length > 0
+        ? participants
             .map((participant) => {
               const role = participant.role ? ` (${participant.role})` : "";
               return `${participant.name}${role}`;
             })
             .join(", ")
         : "Aucun participant renseigné";
-    const tasksText =
-      tasks.length > 0
-        ? tasks
-            .map(
-              (task) =>
-                `- ${task.action}\n  Responsable : ${
-                  task.responsible || "Non attribué"
-                }\n  Échéance : ${
-                  task.due_date || "Non renseignée"
-                }\n  Statut : ${task.status}`
-            )
-            .join("\n")
-        : "Aucune tâche détectée";
+    const pendingTasks = reportTasks.filter(
+      (task) => normalizeTaskStatus(task.status) !== "Fait"
+    );
+    const completedTasks = reportTasks.filter(
+      (task) => normalizeTaskStatus(task.status) === "Fait"
+    );
+    const pendingTasksText =
+      pendingTasks.length > 0
+        ? pendingTasks.map(formatPdfTask).join("\n\n")
+        : reportTasks.length > 0
+          ? "Aucune tâche à faire"
+          : "Aucune tâche détectée";
+    const completedTasksText =
+      completedTasks.length > 0
+        ? completedTasks.map(formatPdfTask).join("\n\n")
+        : reportTasks.length > 0
+          ? "Aucune tâche terminée"
+          : "Aucune tâche détectée";
 
     return [
-      currentMeetingDate ? `Date : ${currentMeetingDate}` : "",
+      "INFORMATIONS",
+      date ? `Date : ${date}` : "Date : Non renseignée",
       `Participants : ${participantsText}`,
       "",
-      message,
+      "COMPTE RENDU",
+      report,
       "",
-      "Tâches détectées",
-      tasksText,
-    ]
-      .filter(Boolean)
-      .join("\n");
+      "TÂCHES À FAIRE",
+      pendingTasksText,
+      "",
+      "TÂCHES TERMINÉES",
+      completedTasksText,
+    ].join("\n");
+  }
+
+  function buildCurrentReportPdfContent() {
+    return buildReportPdfContent({
+      report: message,
+      date: currentMeetingDate,
+      participants: currentParticipants,
+      reportTasks: tasks,
+    });
   }
 
   function downloadCurrentReportPDF() {
@@ -835,6 +973,60 @@ async function saveEditedReport() {
         ? `compte-rendu-${currentMeetingId}.pdf`
         : "compte-rendu-reunion.pdf"
     );
+  }
+
+  async function fetchMeetingPdfData(meetingId: number) {
+    const [tasksResponse, participantsResponse] = await Promise.all([
+      supabase
+        .from("tasks")
+        .select("*")
+        .eq("meeting_id", meetingId)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("meeting_participants")
+        .select("employees(*)")
+        .eq("meeting_id", meetingId),
+    ]);
+
+    if (tasksResponse.error) {
+      console.error(tasksResponse.error);
+      throw tasksResponse.error;
+    }
+
+    if (participantsResponse.error) {
+      console.error(participantsResponse.error);
+      throw participantsResponse.error;
+    }
+
+    const meetingParticipants =
+      (participantsResponse.data as MeetingParticipantRow[] | null)
+        ?.flatMap((item) => item.employees || [])
+        ?.filter((employee): employee is Employee => Boolean(employee)) || [];
+
+    return {
+      reportTasks: (tasksResponse.data || []) as Task[],
+      participants: meetingParticipants,
+    };
+  }
+
+  async function downloadMeetingPDF(meeting: Meeting) {
+    try {
+      const { reportTasks, participants } = await fetchMeetingPdfData(meeting.id);
+
+      downloadPDF(
+        buildReportPdfContent({
+          report: meeting.report,
+          date: new Date(meeting.created_at).toLocaleString("fr-FR"),
+          participants,
+          reportTasks,
+        }),
+        meeting.title || "Compte rendu de réunion",
+        `compte-rendu-${meeting.id}.pdf`
+      );
+    } catch (error) {
+      console.error(error);
+      alert("Erreur lors de la préparation du PDF.");
+    }
   }
 
   async function saveEditedHistoryReport() {
@@ -863,58 +1055,28 @@ async function saveEditedReport() {
   }
 
   function downloadHistoryReportPDF() {
-    const previousTitle = currentTitle;
-    const previousDate = currentMeetingDate;
-    const previousParticipants = currentParticipants;
-    const previousMessage = message;
-    const previousTasks = tasks;
-
-    setCurrentTitle(historyTitle);
-    setCurrentMeetingDate(historyDate);
-    setCurrentParticipants(historyParticipants);
-    setMessage(historyMessage);
-    setTasks(historyTasks);
     downloadPDF(
-      [
-        historyDate ? `Date : ${historyDate}` : "",
-        `Participants : ${
-          historyParticipants.length > 0
-            ? historyParticipants.map((participant) => participant.name).join(", ")
-            : "Aucun participant renseigné"
-        }`,
-        "",
-        historyMessage,
-        "",
-        "Tâches détectées",
-        historyTasks.length > 0
-          ? historyTasks
-              .map(
-                (task) =>
-                  `- ${task.action}\n  Responsable : ${
-                    task.responsible || "Non attribué"
-                  }\n  Échéance : ${
-                    task.due_date || "Non renseignée"
-                  }\n  Statut : ${task.status}`
-              )
-              .join("\n")
-          : "Aucune tâche détectée",
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      buildReportPdfContent({
+        report: historyMessage,
+        date: historyDate,
+        participants: historyParticipants,
+        reportTasks: historyTasks,
+      }),
       historyTitle || "Compte rendu de réunion",
       openedHistoryMeetingId
         ? `compte-rendu-${openedHistoryMeetingId}.pdf`
         : "compte-rendu-reunion.pdf"
     );
-    setCurrentTitle(previousTitle);
-    setCurrentMeetingDate(previousDate);
-    setCurrentParticipants(previousParticipants);
-    setMessage(previousMessage);
-    setTasks(previousTasks);
   }
 
   function openHistoryBulkTasksModal() {
+    closeAllMenus();
     sendAllPendingTasks(historyTasks);
+  }
+
+  function openCurrentBulkTasksModal() {
+    closeAllMenus();
+    sendAllPendingTasks(tasks);
   }
   async function loadMeetingTasks(meetingId: number) {
   const { data, error } = await supabase
@@ -930,26 +1092,109 @@ async function saveEditedReport() {
 
   setTasks(data || []);
 }
-async function toggleTaskStatus(task: Task) {
-  const newStatus = task.status === "Fait" ? "À faire" : "Fait";
+function updateTaskEverywhere(
+  taskId: number,
+  updater: (currentTask: Task) => Task
+) {
+  const updateMatchingTasks = (currentTasks: Task[]) =>
+    currentTasks.map((currentTask) =>
+      currentTask.id === taskId ? updater(currentTask) : currentTask
+    );
+
+  setTasks(updateMatchingTasks);
+  setHistoryTasks(updateMatchingTasks);
+  setBulkTaskSource(updateMatchingTasks);
+  setDashboardTasks(updateMatchingTasks);
+}
+
+function normalizeTaskStatus(status: string | null | undefined): TaskStatus {
+  if (status === "En cours" || status === "Fait") {
+    return status;
+  }
+
+  return "À faire";
+}
+
+function getNextTaskStatus(task: Task): TaskStatus {
+  const currentStatus = normalizeTaskStatus(task.status);
+
+  if (currentStatus === "À faire") {
+    return "En cours";
+  }
+
+  if (currentStatus === "En cours") {
+    return "Fait";
+  }
+
+  return "À faire";
+}
+
+async function updateTaskStatus(task: Task, status: TaskStatus) {
+  const completedAt = status === "Fait" ? new Date().toISOString() : null;
+  const updatePayload = {
+    status,
+    completed_at: completedAt,
+  };
 
   const { error } = await supabase
     .from("tasks")
-    .update({ status: newStatus })
+    .update(updatePayload)
+    .eq("id", task.id);
+
+  if (error) {
+    if (isMissingCompletedAtColumnError(error)) {
+      console.warn(
+        "Colonne completed_at absente dans Supabase. Le statut est sauvegardé sans completed_at.",
+        error
+      );
+
+      const { error: fallbackError } = await supabase
+        .from("tasks")
+        .update({ status })
+        .eq("id", task.id);
+
+      if (fallbackError) {
+        console.error(fallbackError);
+        return;
+      }
+	    } else {
+	      console.error(error);
+	      return;
+	    }
+  }
+
+  updateTaskEverywhere(task.id, (currentTask) => ({
+    ...currentTask,
+    status,
+    completed_at: completedAt,
+  }));
+}
+
+async function updateTaskAction(task: Task) {
+  const nextAction = editedTaskAction.trim();
+
+  if (!nextAction) {
+    alert("Le texte de la tâche ne peut pas être vide.");
+    return;
+  }
+
+  const { error } = await supabase
+    .from("tasks")
+    .update({ action: nextAction })
     .eq("id", task.id);
 
   if (error) {
     console.error(error);
+    alert("Erreur lors de la modification de la tâche.");
     return;
   }
 
-  setTasks((currentTasks) =>
-    currentTasks.map((currentTask) =>
-      currentTask.id === task.id
-        ? { ...currentTask, status: newStatus }
-        : currentTask
-    )
-  );
+  updateTaskEverywhere(task.id, (currentTask) => ({
+    ...currentTask,
+    action: nextAction,
+  }));
+  setEditingTaskId(null);
+  setEditedTaskAction("");
 }
 async function deleteTask(taskId: number) {
   const { error } = await supabase
@@ -962,8 +1207,15 @@ async function deleteTask(taskId: number) {
     return;
   }
 
-  setTasks((currentTasks) =>
-    currentTasks.filter((task) => task.id !== taskId)
+  const removeTask = (currentTasks: Task[]) =>
+    currentTasks.filter((task) => task.id !== taskId);
+
+  setTasks(removeTask);
+  setHistoryTasks(removeTask);
+  setBulkTaskSource(removeTask);
+  setDashboardTasks(removeTask);
+  setSelectedBulkTaskIds((currentIds) =>
+    currentIds.filter((currentId) => currentId !== taskId)
   );
 
   closeAllMenus();
@@ -979,13 +1231,10 @@ async function updateTaskDueDate(taskId: number, dueDate: string) {
     return;
   }
 
-  setTasks((currentTasks) =>
-    currentTasks.map((task) =>
-      task.id === taskId
-        ? { ...task, due_date: dueDate || null }
-        : task
-    )
-  );
+  updateTaskEverywhere(taskId, (task) => ({
+    ...task,
+    due_date: dueDate || null,
+  }));
 }
 async function updateTaskResponsible(task: Task, employeeId: number) {
   const employee = employees.find((e) => e.id === employeeId);
@@ -1011,17 +1260,11 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
     return;
   }
 
-  setTasks((currentTasks) =>
-    currentTasks.map((currentTask) =>
-      currentTask.id === task.id
-        ? {
-            ...currentTask,
-            responsible: employee.name,
-            responsible_employee_id: employee.id,
-          }
-        : currentTask
-    )
-  );
+  updateTaskEverywhere(task.id, (currentTask) => ({
+    ...currentTask,
+    responsible: employee.name,
+    responsible_employee_id: employee.id,
+  }));
 
   closeAllMenus();
 }
@@ -1075,17 +1318,11 @@ async function createResponsibleAndAssignTask(task: Task) {
       a.name.localeCompare(b.name)
     )
   );
-  setTasks((currentTasks) =>
-    currentTasks.map((currentTask) =>
-      currentTask.id === task.id
-        ? {
-            ...currentTask,
-            responsible: newEmployee.name,
-            responsible_employee_id: newEmployee.id,
-          }
-        : currentTask
-    )
-  );
+  updateTaskEverywhere(task.id, (currentTask) => ({
+    ...currentTask,
+    responsible: newEmployee.name,
+    responsible_employee_id: newEmployee.id,
+  }));
   setNewResponsibleForm({ name: "", role: "", email: "" });
   closeAllMenus();
 }
@@ -1108,6 +1345,20 @@ function getTaskResponsibleEmployeeId(task: Task) {
   );
 }
 
+function getTaskDueDateClass(task: Task) {
+  const status = normalizeTaskStatus(task.status);
+
+  if (status === "Fait") {
+    return "border-green-300 bg-green-50";
+  }
+
+  if (status === "En cours") {
+    return "border-orange-300 bg-orange-50";
+  }
+
+  return "border-red-300 bg-red-50";
+}
+
 function getLocalDateIso(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -1116,26 +1367,174 @@ function getLocalDateIso(date = new Date()) {
   return `${year}-${month}-${day}`;
 }
 
-function getTaskDueDateClass(task: Task) {
-  if (task.status === "Fait") {
-    return "bg-green-100 border-green-300";
+function getDashboardPeriodLabel(period: DashboardPeriod) {
+  if (period === "week") return "Cette semaine";
+  if (period === "month") return "Ce mois";
+  if (period === "year") return "Cette année";
+  return "Totalité";
+}
+
+function isDateInDashboardPeriod(
+  dateValue: string | null | undefined,
+  period: DashboardPeriod
+) {
+  if (period === "all") {
+    return true;
   }
 
-  if (!task.due_date) {
-    return "bg-white";
+  if (!dateValue) {
+    return false;
   }
 
+  const date = new Date(dateValue);
+
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  const now = new Date();
+
+  if (period === "year") {
+    return date.getFullYear() === now.getFullYear();
+  }
+
+  if (period === "month") {
+    return (
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth()
+    );
+  }
+
+  const startOfWeek = new Date(now);
+  const dayOfWeek = (startOfWeek.getDay() + 6) % 7;
+  startOfWeek.setDate(startOfWeek.getDate() - dayOfWeek);
+  startOfWeek.setHours(0, 0, 0, 0);
+
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 7);
+
+  return date >= startOfWeek && date < endOfWeek;
+}
+
+function getTaskPeriodDate(task: Task, meetingsSource: Meeting[]) {
+  const meeting = meetingsSource.find(
+    (currentMeeting) => currentMeeting.id === task.meeting_id
+  );
+
+  return meeting?.created_at || task.created_at;
+}
+
+function getOpenTasks(sourceTasks: Task[]) {
+  return sourceTasks.filter(
+    (task) => normalizeTaskStatus(task.status) !== "Fait"
+  );
+}
+
+function dedupeTasksById(sourceTasks: Task[]) {
+  return [...new Map(sourceTasks.map((task) => [task.id, task])).values()];
+}
+
+function getUrgentTasks(sourceTasks: Task[]) {
   const today = getLocalDateIso();
+  const openTasks = getOpenTasks(sourceTasks);
 
-  if (task.due_date < today) {
-    return "bg-red-50 border-red-300";
+  return {
+    overdueTasks: openTasks.filter(
+      (task) => Boolean(task.due_date) && task.due_date! < today
+    ),
+    dueTodayTasks: openTasks.filter((task) => task.due_date === today),
+  };
+}
+
+function getTopOpenTaskEmployee(sourceTasks: Task[]) {
+  const openTasks = getOpenTasks(sourceTasks);
+  const taskCounts = new Map<number, number>();
+
+  openTasks.forEach((task) => {
+    if (!task.responsible_employee_id) return;
+    taskCounts.set(
+      task.responsible_employee_id,
+      (taskCounts.get(task.responsible_employee_id) || 0) + 1
+    );
+  });
+
+  const topEntry = [...taskCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+
+  if (!topEntry) {
+    return null;
   }
 
-  if (task.due_date === today) {
-    return "bg-orange-50 border-orange-300";
+  const employee = employees.find((currentEmployee) => currentEmployee.id === topEntry[0]);
+
+  if (!employee) {
+    return null;
   }
 
-  return "bg-green-50 border-green-300";
+  return {
+    employee,
+    count: topEntry[1],
+  };
+}
+
+function renderReportContent(report: string) {
+  const sections: { title: string | null; content: string[] }[] = [];
+  let currentSection: { title: string | null; content: string[] } = {
+    title: null,
+    content: [],
+  };
+
+  report.split("\n").forEach((line) => {
+    const headingMatch = line.match(/^#\s+(.+)$/);
+
+    if (headingMatch) {
+      if (currentSection.title || currentSection.content.join("").trim()) {
+        sections.push(currentSection);
+      }
+
+      currentSection = {
+        title: headingMatch[1].trim(),
+        content: [],
+      };
+      return;
+    }
+
+    currentSection.content.push(line);
+  });
+
+  if (currentSection.title || currentSection.content.join("").trim()) {
+    sections.push(currentSection);
+  }
+
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-4">
+      {sections.map((section, index) =>
+        section.title ? (
+          <section
+            key={`${section.title}-${index}`}
+            className="space-y-2"
+          >
+            <h3 className="inline-flex rounded bg-black px-3 py-1 text-sm font-semibold text-white">
+              {section.title}
+            </h3>
+            <div className="whitespace-pre-wrap text-sm leading-6 text-gray-700">
+              {section.content.join("\n").trim() || "Aucun contenu renseigné."}
+            </div>
+          </section>
+        ) : (
+          <div
+            key={`intro-${index}`}
+            className="whitespace-pre-wrap text-sm leading-6 text-gray-700"
+          >
+            {section.content.join("\n").trim()}
+          </div>
+        )
+      )}
+    </div>
+  );
 }
 
 async function askAndUpdateTaskDueDate(task: Task) {
@@ -1195,7 +1594,7 @@ ${task.action}
 ${task.due_date || "Non renseignée"}
 
 Statut :
-${task.status}
+${normalizeTaskStatus(task.status)}
 
 Cordialement,
 BriefLy`;
@@ -1222,11 +1621,295 @@ BriefLy`;
 
   alert("Tâche envoyée au responsable.");
 }
+
+function getTaskStatusBadgeClass(status: TaskStatus) {
+  if (status === "Fait") {
+    return "bg-green-100 text-green-700 hover:bg-green-200";
+  }
+
+  if (status === "En cours") {
+    return "bg-orange-100 text-orange-700 hover:bg-orange-200";
+  }
+
+  return "bg-red-100 text-red-700 hover:bg-red-200";
+}
+
+function getTaskStatusLabel(status: TaskStatus) {
+  if (status === "Fait") {
+    return "🟢 Fait";
+  }
+
+  if (status === "En cours") {
+    return "🟠 En cours";
+  }
+
+  return "🔴 À faire";
+}
+
+function renderTaskStatusBadge(task: Task, className = "mt-3") {
+  const status = normalizeTaskStatus(task.status);
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        updateTaskStatus(task, getNextTaskStatus(task));
+      }}
+      className={`${className} inline-flex rounded-full px-3 py-1 text-sm font-semibold ${getTaskStatusBadgeClass(
+        status
+      )}`}
+    >
+      {getTaskStatusLabel(status)}
+    </button>
+  );
+}
+
+function renderTaskMenu(task: Task) {
+  return (
+    <>
+      <button
+        type="button"
+        data-menu-trigger
+        aria-label={`Ouvrir le menu de la tâche ${task.action}`}
+        aria-expanded={openTaskMenuId === task.id}
+        onClick={(e) => {
+          e.stopPropagation();
+
+          const shouldOpenMenu = openTaskMenuId !== task.id;
+
+          closeAllMenus();
+
+          if (shouldOpenMenu) {
+            setOpenTaskMenuId(task.id);
+          }
+        }}
+        className="absolute right-3 top-3 px-2 text-gray-500 hover:text-black"
+      >
+        ⋯
+      </button>
+
+      {openTaskMenuId === task.id && (
+        <div
+          data-menu-content
+          onClick={(e) => e.stopPropagation()}
+          className="absolute right-3 top-10 z-50 min-w-[240px] overflow-hidden rounded border bg-white shadow-lg"
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditingTaskId(task.id);
+              setEditedTaskAction(task.action);
+            }}
+            className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+          >
+            Modifier la tâche
+          </button>
+
+          {editingTaskId === task.id && (
+            <div className="space-y-2 border-t border-gray-100 px-3 py-2">
+              <textarea
+                value={editedTaskAction}
+                onChange={(e) => setEditedTaskAction(e.target.value)}
+                className="min-h-20 w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+              />
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    updateTaskAction(task);
+                  }}
+                  className="flex-1 rounded bg-black px-3 py-1.5 text-sm text-white"
+                >
+                  Enregistrer
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditingTaskId(null);
+                    setEditedTaskAction("");
+                  }}
+                  className="rounded border px-3 py-1.5 text-sm"
+                >
+                  Annuler
+                </button>
+              </div>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              downloadTaskCalendar(task);
+              closeAllMenus();
+            }}
+            className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+          >
+            Ajouter au calendrier
+          </button>
+
+          <div className="border-t border-gray-100 px-3 py-2">
+            <label
+              htmlFor={`task-responsible-${task.id}`}
+              className="mb-1 block text-xs font-medium text-gray-600"
+            >
+              Modifier le responsable
+            </label>
+
+            <select
+              id={`task-responsible-${task.id}`}
+              value={getTaskResponsibleEmployeeId(task)}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                e.stopPropagation();
+
+                if (e.target.value === "new") {
+                  setNewResponsibleTaskId(task.id);
+                  setNewResponsibleForm({ name: "", role: "", email: "" });
+                  return;
+                }
+
+                const employeeId = Number(e.target.value);
+
+                if (!employeeId) return;
+
+                updateTaskResponsible(task, employeeId);
+              }}
+              className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900"
+            >
+              <option value="">Choisir un responsable</option>
+              <option value="new">Ajouter un nouveau responsable</option>
+
+              {employees.map((employee) => (
+                <option key={employee.id} value={employee.id}>
+                  {employee.name} - {employee.role || "Sans rôle"}
+                </option>
+              ))}
+            </select>
+
+            {newResponsibleTaskId === task.id && (
+              <div
+                className="mt-3 space-y-2 border-t border-gray-100 pt-3"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <input
+                  type="text"
+                  value={newResponsibleForm.name}
+                  onChange={(e) =>
+                    setNewResponsibleForm((currentForm) => ({
+                      ...currentForm,
+                      name: e.target.value,
+                    }))
+                  }
+                  placeholder="Nom complet"
+                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                />
+
+                <input
+                  type="text"
+                  value={newResponsibleForm.role}
+                  onChange={(e) =>
+                    setNewResponsibleForm((currentForm) => ({
+                      ...currentForm,
+                      role: e.target.value,
+                    }))
+                  }
+                  placeholder="Rôle"
+                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                />
+
+                <input
+                  type="email"
+                  value={newResponsibleForm.email}
+                  onChange={(e) =>
+                    setNewResponsibleForm((currentForm) => ({
+                      ...currentForm,
+                      email: e.target.value,
+                    }))
+                  }
+                  placeholder="Email"
+                  className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
+                />
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      createResponsibleAndAssignTask(task);
+                    }}
+                    className="flex-1 rounded bg-black px-3 py-1.5 text-sm text-white"
+                  >
+                    Créer et assigner
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setNewResponsibleTaskId(null);
+                      setNewResponsibleForm({ name: "", role: "", email: "" });
+                    }}
+                    className="rounded border px-3 py-1.5 text-sm"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              askAndUpdateTaskDueDate(task);
+            }}
+            className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+          >
+            Modifier l’échéance
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              sendTaskToResponsible(task);
+              closeAllMenus();
+            }}
+            className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+          >
+            Envoyer au responsable
+          </button>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteTask(task.id);
+            }}
+            className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100"
+          >
+            Supprimer la tâche
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
 function getPendingTasksByResponsible(
   selectedTaskIds?: number[],
   sourceTasks: Task[] = tasks
 ) {
-  const pendingTasks = sourceTasks.filter((task) => task.status !== "Fait");
+  const pendingTasks = sourceTasks.filter(
+    (task) => normalizeTaskStatus(task.status) !== "Fait"
+  );
   const tasksByEmployee = new Map<Employee, Task[]>();
   const ignoredTasks: string[] = [];
 
@@ -1259,12 +1942,9 @@ function getPendingTasksByResponsible(
 }
 
 function sendAllPendingTasks(sourceTasks: Task[] = tasks) {
-  const pendingTasks = sourceTasks.filter((task) => task.status !== "Fait");
-
-  if (pendingTasks.length === 0) {
-    setEmailStatus("Aucune tâche à faire à envoyer.");
-    return;
-  }
+  const pendingTasks = sourceTasks.filter(
+    (task) => normalizeTaskStatus(task.status) !== "Fait"
+  );
 
   setBulkTaskSource(sourceTasks);
   setSelectedBulkTaskIds(pendingTasks.map((task) => task.id));
@@ -1296,7 +1976,7 @@ async function confirmSendSelectedTasks() {
           (task, index) =>
             `${index + 1}. ${task.action}\n   Échéance : ${
               task.due_date || "Non renseignée"
-            }\n   Statut : ${task.status}`
+            }\n   Statut : ${normalizeTaskStatus(task.status)}`
         )
         .join("\n\n");
 
@@ -1340,6 +2020,141 @@ Briefly`,
   } catch (error) {
     console.error(error);
     setEmailStatus("Erreur pendant l'envoi des tâches.");
+  }
+}
+
+function getDashboardPeriodTasks() {
+  const dashboardMeetings = meetings.filter((meeting) =>
+    isDateInDashboardPeriod(meeting.created_at, dashboardPeriod)
+  );
+  const dashboardMeetingIds = new Set(
+    dashboardMeetings.map((meeting) => meeting.id)
+  );
+
+  return dashboardTasks.filter((task) => {
+    if (dashboardMeetingIds.has(task.meeting_id)) {
+      return true;
+    }
+
+    return isDateInDashboardPeriod(
+      getTaskPeriodDate(task, meetings),
+      dashboardPeriod
+    );
+  });
+}
+
+function openReminderModal() {
+  const periodTasks = getDashboardPeriodTasks();
+  const { overdueTasks } = getUrgentTasks(periodTasks);
+  const openTasks = dedupeTasksById(getOpenTasks(periodTasks));
+
+  setReminderTaskSource(openTasks);
+  setSelectedReminderTaskIds([
+    ...new Set(dedupeTasksById(overdueTasks).map((task) => task.id)),
+  ]);
+  setShowOtherReminderTasks(false);
+  setReminderStatus("");
+  setShowReminderModal(true);
+}
+
+function closeReminderModal() {
+  setShowReminderModal(false);
+  setShowOtherReminderTasks(false);
+  setReminderStatus("");
+  setReminderTaskSource([]);
+  setSelectedReminderTaskIds([]);
+}
+
+async function confirmReminderEmails() {
+  const selectedTasks = dedupeTasksById(reminderTaskSource).filter((task) =>
+    selectedReminderTaskIds.includes(task.id)
+  );
+  const tasksByEmployee = new Map<Employee, Task[]>();
+  const ignoredTasks: string[] = [];
+
+  selectedTasks.forEach((task) => {
+    const employee = task.responsible_employee_id
+      ? employees.find(
+          (currentEmployee) => currentEmployee.id === task.responsible_employee_id
+        )
+      : null;
+
+    if (!employee) {
+      ignoredTasks.push(`${task.action} : aucun responsable assigné`);
+      return;
+    }
+
+    if (!employee.email?.trim()) {
+      ignoredTasks.push(`${task.action} : aucun email pour ${employee.name}`);
+      return;
+    }
+
+    const currentTasks = tasksByEmployee.get(employee) || [];
+    tasksByEmployee.set(employee, [...currentTasks, task]);
+  });
+
+  if (tasksByEmployee.size === 0) {
+    const ignoredMessage =
+      ignoredTasks.length > 0 ? ` ${ignoredTasks.join(" ; ")}` : "";
+    setReminderStatus(
+      `Aucune relance envoyée. ${ignoredTasks.length} tâche(s) ignorée(s).${ignoredMessage}`
+    );
+    return;
+  }
+
+  try {
+    setReminderStatus("Relance des tâches en cours...");
+
+    for (const [employee, employeeTasks] of tasksByEmployee) {
+      const taskList = employeeTasks
+        .map(
+          (task, index) =>
+            `${index + 1}. ${task.action}\n   Échéance : ${
+              task.due_date || "Non renseignée"
+            }\n   Statut : ${normalizeTaskStatus(task.status)}`
+        )
+        .join("\n\n");
+
+      await fetch("/api/send-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          emails: [employee.email],
+          title: "Relance de tâches en retard",
+          subject: "Relance - tâches en retard",
+          report: `Bonjour ${employee.name},
+
+Voici vos tâches en retard dans Briefly :
+
+${taskList}
+
+Cordialement,
+Briefly`,
+        }),
+      }).then(async (response) => {
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || "Erreur pendant la relance.");
+        }
+      });
+
+      // Future extension point: trigger an in-app notification here.
+    }
+
+    const ignoredMessage =
+      ignoredTasks.length > 0 ? ` ${ignoredTasks.join(" ; ")}` : "";
+    const sentTaskCount = [...tasksByEmployee.values()].reduce(
+      (total, employeeTasks) => total + employeeTasks.length,
+      0
+    );
+    setReminderStatus(
+      `${tasksByEmployee.size} emails envoyés, ${sentTaskCount} tâche(s) relancée(s), ${ignoredTasks.length} tâche(s) ignorée(s).${ignoredMessage}`
+    );
+  } catch (error) {
+    console.error(error);
+    setReminderStatus("Erreur pendant la relance des tâches.");
   }
 }
 function downloadTaskCalendar(task: Task) {
@@ -1495,15 +2310,17 @@ const filteredMeetings = meetings.filter((meeting) => {
 
   return matchesSearch && matchesFilter;
 });
-const filteredTasks = tasks.filter((task) => {
-  const matchesResponsible =
-    selectedResponsible === "Tous" ||
-    task.responsible === selectedResponsible;
-
-  const matchesStatus =
-    taskStatusFilter === "all" ||
-    (taskStatusFilter === "done" && task.status === "Fait") ||
-    (taskStatusFilter === "todo" && task.status !== "Fait");
+	const filteredTasks = tasks.filter((task) => {
+	  const taskStatus = normalizeTaskStatus(task.status);
+	  const matchesResponsible =
+	    selectedResponsible === "Tous" ||
+	    task.responsible === selectedResponsible;
+	
+	  const matchesStatus =
+	    taskStatusFilter === "all" ||
+	    (taskStatusFilter === "done" && taskStatus === "Fait") ||
+	    (taskStatusFilter === "progress" && taskStatus === "En cours") ||
+	    (taskStatusFilter === "todo" && taskStatus === "À faire");
 
   return matchesResponsible && matchesStatus;
 });
@@ -1517,9 +2334,10 @@ const filteredTasks = tasks.filter((task) => {
       </p>
 
       <nav className="mb-8 flex flex-wrap justify-center gap-2">
-        {[
-          ["new", "Nouvelle réunion"],
-          ["report", "Compte rendu ouvert"],
+	        {[
+	          ["dashboard", "Tableau de bord"],
+	          ["new", "Nouvelle réunion"],
+	          ["report", "Compte rendu ouvert"],
           ["history", "Historique"],
           ["collaborators", "Collaborateurs"],
         ].map(([section, label]) => (
@@ -1537,9 +2355,174 @@ const filteredTasks = tasks.filter((task) => {
             {label}
           </button>
         ))}
-      </nav>
+	      </nav>
+	
+	      {activeSection === "dashboard" && (
+	        <section className="w-full max-w-5xl rounded-lg border p-6">
+	          {(() => {
+	            const dashboardMeetings = meetings.filter((meeting) =>
+	              isDateInDashboardPeriod(meeting.created_at, dashboardPeriod)
+	            );
+	            const periodTasks = getDashboardPeriodTasks();
+	            const todoTasks = periodTasks.filter(
+	              (task) => normalizeTaskStatus(task.status) === "À faire"
+	            );
+	            const inProgressTasks = periodTasks.filter(
+	              (task) => normalizeTaskStatus(task.status) === "En cours"
+	            );
+	            const doneTasks = periodTasks.filter(
+	              (task) => normalizeTaskStatus(task.status) === "Fait"
+	            );
+	            const { overdueTasks, dueTodayTasks } = getUrgentTasks(periodTasks);
+	            const topEmployee = getTopOpenTaskEmployee(periodTasks);
+	            const statCards = [
+	              {
+	                label: "Réunions",
+	                value: dashboardMeetings.length,
+	                tone: "border-gray-200 bg-white",
+	              },
+	              {
+	                label: "Tâches",
+	                value: periodTasks.length,
+	                tone: "border-gray-200 bg-white",
+	              },
+	              {
+	                label: "À faire",
+	                value: todoTasks.length,
+	                tone: "border-red-200 bg-red-50",
+	              },
+	              {
+	                label: "En cours",
+	                value: inProgressTasks.length,
+	                tone: "border-orange-200 bg-orange-50",
+	              },
+	              {
+	                label: "Fait",
+	                value: doneTasks.length,
+	                tone: "border-green-200 bg-green-50",
+	              },
+	              {
+	                label: "En retard",
+	                value: overdueTasks.length,
+	                tone: "border-red-200 bg-red-50",
+	              },
+	              {
+	                label: "Dues aujourd’hui",
+	                value: dueTodayTasks.length,
+	                tone: "border-orange-200 bg-orange-50",
+	              },
+	              {
+	                label: "Collaborateur le plus chargé",
+	                value: topEmployee
+	                  ? `${topEmployee.employee.name} (${topEmployee.count})`
+	                  : "Aucun",
+	                tone: "border-gray-200 bg-white",
+	              },
+	            ];
 
-      {activeSection === "new" && (
+	            const urgentTasks = [
+	              ...overdueTasks.map((task) => ({ task, label: "En retard" })),
+	              ...dueTodayTasks.map((task) => ({
+	                task,
+	                label: "Aujourd’hui",
+	              })),
+	            ];
+
+	            return (
+	              <>
+	                <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+	                  <div>
+	                    <h2 className="text-2xl font-bold">Tableau de bord</h2>
+	                    <p className="text-sm text-gray-600">
+	                      Vue d’ensemble des réunions et des tâches ouvertes -{" "}
+	                      {getDashboardPeriodLabel(dashboardPeriod)}.
+	                    </p>
+	                  </div>
+	                  <label className="flex items-center gap-2 text-sm">
+	                    <span className="font-medium">Période</span>
+	                    <select
+	                      value={dashboardPeriod}
+	                      onChange={(e) =>
+	                        setDashboardPeriod(e.target.value as DashboardPeriod)
+	                      }
+	                      className="rounded border bg-white px-3 py-2"
+	                    >
+	                      <option value="week">Cette semaine</option>
+	                      <option value="month">Ce mois</option>
+	                      <option value="year">Cette année</option>
+	                      <option value="all">Totalité</option>
+	                    </select>
+	                  </label>
+	                </div>
+
+	                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+	                  {statCards.map((card) => (
+	                    <div
+	                      key={card.label}
+	                      className={`rounded-lg border p-4 ${card.tone}`}
+	                    >
+	                      <p className="text-sm text-gray-600">{card.label}</p>
+	                      <p className="mt-2 text-2xl font-bold">{card.value}</p>
+	                    </div>
+	                  ))}
+	                </div>
+
+	                <div className="mt-6 rounded-lg border bg-white p-4">
+		                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+		                    <h3 className="text-lg font-bold">Tâches urgentes</h3>
+		                    <div className="flex items-center gap-2">
+		                      <span className="rounded-full bg-black px-3 py-1 text-xs font-semibold text-white">
+		                        {urgentTasks.length}
+		                      </span>
+		                      <button
+		                        type="button"
+		                        onClick={openReminderModal}
+		                        className="rounded border px-3 py-1 text-sm"
+		                      >
+		                        Relancer
+		                      </button>
+		                    </div>
+		                  </div>
+
+	                  {urgentTasks.length === 0 ? (
+	                    <p className="text-sm text-gray-600">
+	                      Aucune tâche en retard ou due aujourd’hui.
+	                    </p>
+	                  ) : (
+	                    <div className="space-y-2">
+	                      {urgentTasks.map(({ task, label }) => (
+	                        <div
+	                          key={`${label}-${task.id}`}
+	                          className={`rounded border p-3 ${
+	                            label === "En retard"
+	                              ? "border-red-200 bg-red-50"
+	                              : "border-orange-200 bg-orange-50"
+	                          }`}
+	                        >
+	                          <div className="flex flex-wrap items-start justify-between gap-3">
+	                            <p className="font-semibold">{task.action}</p>
+	                            <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-gray-700">
+	                              {label}
+	                            </span>
+	                          </div>
+	                          <p className="text-sm text-gray-600">
+	                            Responsable : {task.responsible || "Non attribué"}
+	                          </p>
+	                          <p className="text-sm text-gray-600">
+	                            Échéance : {task.due_date || "Non renseignée"}
+	                          </p>
+	                        </div>
+	                      ))}
+	                    </div>
+	                  )}
+	                </div>
+	              </>
+	            );
+	          })()}
+	        </section>
+	      )}
+
+	      {activeSection === "new" && (
         <section className="flex w-full max-w-3xl flex-col items-center rounded-lg border p-8 text-center">
           <h2 className="text-2xl font-bold">Nouvelle réunion</h2>
 
@@ -1729,13 +2712,17 @@ closeAllMenus();
     task.responsible_employee_id === selectedEmployeeProfile.id
 );
 
-    const completedTasks = employeeTasks.filter(
-      (task) => task.status === "Fait"
-    );
-
-    const pendingTasks = employeeTasks.filter(
-      (task) => task.status !== "Fait"
-    );
+	    const completedTasks = employeeTasks.filter(
+	      (task) => normalizeTaskStatus(task.status) === "Fait"
+	    );
+	
+	    const inProgressTasks = employeeTasks.filter(
+	      (task) => normalizeTaskStatus(task.status) === "En cours"
+	    );
+	
+	    const pendingTasks = employeeTasks.filter(
+	      (task) => normalizeTaskStatus(task.status) === "À faire"
+	    );
 
     return (
       <div className="mb-4 p-4 border rounded-lg bg-gray-50">
@@ -1765,19 +2752,31 @@ closeAllMenus();
         <hr className="my-3" />
 
         <p>📋 Tâches : {employeeTasks.length}</p>
-        <p>✅ Terminées : {completedTasks.length}</p>
-        <p>⏳ À faire : {pendingTasks.length}</p>
+	        <p>🔴 À faire : {pendingTasks.length}</p>
+	        <p>🟠 En cours : {inProgressTasks.length}</p>
+	        <p>🟢 Terminées : {completedTasks.length}</p>
 
-        {pendingTasks.length > 0 && (
-          <>
-            <h5 className="font-semibold mt-3">Tâches à faire</h5>
+	        {pendingTasks.length > 0 && (
+	          <>
+	            <h5 className="font-semibold mt-3">Tâches à faire</h5>
             <ul className="list-disc list-inside text-sm">
               {pendingTasks.map((task) => (
                 <li key={task.id}>{task.action}</li>
               ))}
             </ul>
-          </>
-        )}
+	          </>
+	        )}
+	
+	        {inProgressTasks.length > 0 && (
+	          <>
+	            <h5 className="font-semibold mt-3">Tâches en cours</h5>
+	            <ul className="list-disc list-inside text-sm">
+	              {inProgressTasks.map((task) => (
+	                <li key={task.id}>{task.action}</li>
+	              ))}
+	            </ul>
+	          </>
+	        )}
 
         {completedTasks.length > 0 && (
           <>
@@ -1848,10 +2847,11 @@ closeAllMenus();
       Télécharger en PDF
     </button>
 
-    <button
-      onClick={() => sendAllPendingTasks()}
-      className="px-4 py-2 border rounded"
-    >
+	    <button
+	      type="button"
+	      onClick={openCurrentBulkTasksModal}
+	      className="px-4 py-2 border rounded"
+	    >
       Envoyer toutes les tâches
     </button>
 
@@ -1919,11 +2919,11 @@ closeAllMenus();
     📝 {tasks.length} tâche{tasks.length > 1 ? "s" : ""}
   </button>
 
-  <button
-    onClick={() => {
-      const doneCount = tasks.filter(
-        (task) => task.status === "Fait"
-      ).length;
+	  <button
+	    onClick={() => {
+	      const doneCount = tasks.filter(
+	        (task) => normalizeTaskStatus(task.status) === "Fait"
+	      ).length;
 
       if (doneCount === 0) return;
 
@@ -1933,27 +2933,45 @@ closeAllMenus();
         ?.scrollIntoView({ behavior: "smooth" });
     }}
     className="hover:underline"
-  >
-    ✅ {tasks.filter((task) => task.status === "Fait").length} terminées
-  </button>
-
-  <button
-    onClick={() => {
-      const todoCount = tasks.filter(
-        (task) => task.status !== "Fait"
-      ).length;
-
-      if (todoCount === 0) return;
-
-      setTaskStatusFilter("todo");
-      document
-        .getElementById("actions-detectees")
-        ?.scrollIntoView({ behavior: "smooth" });
-    }}
-    className="hover:underline"
-  >
-    ⏳ {tasks.filter((task) => task.status !== "Fait").length} à faire
-  </button>
+	  >
+	    🟢 {tasks.filter((task) => normalizeTaskStatus(task.status) === "Fait").length} terminées
+	  </button>
+	
+	  <button
+	    onClick={() => {
+	      const progressCount = tasks.filter(
+	        (task) => normalizeTaskStatus(task.status) === "En cours"
+	      ).length;
+	
+	      if (progressCount === 0) return;
+	
+	      setTaskStatusFilter("progress");
+	      document
+	        .getElementById("actions-detectees")
+	        ?.scrollIntoView({ behavior: "smooth" });
+	    }}
+	    className="hover:underline"
+	  >
+	    🟠 {tasks.filter((task) => normalizeTaskStatus(task.status) === "En cours").length} en cours
+	  </button>
+	
+	  <button
+	    onClick={() => {
+	      const todoCount = tasks.filter(
+	        (task) => normalizeTaskStatus(task.status) === "À faire"
+	      ).length;
+	
+	      if (todoCount === 0) return;
+	
+	      setTaskStatusFilter("todo");
+	      document
+	        .getElementById("actions-detectees")
+	        ?.scrollIntoView({ behavior: "smooth" });
+	    }}
+	    className="hover:underline"
+	  >
+	    🔴 {tasks.filter((task) => normalizeTaskStatus(task.status) === "À faire").length} à faire
+	  </button>
 </div>
 )}
    
@@ -2001,9 +3019,7 @@ closeAllMenus();
       </div>
     ) : (
       <>
-     <div className="whitespace-pre-wrap">
-  {message}
-</div>
+	     {renderReportContent(message)}
 
 {tasks.length > 0 && (
   <div className="mt-6 border rounded-lg p-4 bg-gray-50">
@@ -2032,204 +3048,16 @@ closeAllMenus();
 
   
    <div className="space-y-3">
-      {filteredTasks.map((task) => (
-       <div
-  key={task.id}
-  onClick={() => toggleTaskStatus(task)}
-  className={`relative border rounded p-3 pr-12 cursor-pointer transition ${getTaskDueDateClass(
-    task
-  )}`}
->
-          <button
-  type="button"
-  data-menu-trigger
-  aria-label={`Ouvrir le menu de la tâche ${task.action}`}
-  aria-expanded={openTaskMenuId === task.id}
-  onClick={(e) => {
-    e.stopPropagation();
+	      {filteredTasks.map((task) => (
+	       <div
+	  key={task.id}
+	  className={`relative border rounded p-3 pr-12 transition ${getTaskDueDateClass(
+	    task
+	  )}`}
+	>
+	          {renderTaskMenu(task)}
 
-    const shouldOpenMenu = openTaskMenuId !== task.id;
-
-    closeAllMenus();
-
-    if (shouldOpenMenu) {
-      setOpenTaskMenuId(task.id);
-    }
-  }}
-  className="absolute top-3 right-3 px-2 text-gray-500 hover:text-black"
->
-  ⋯
-</button>
-
-          {openTaskMenuId === task.id && (
-  <div
-    data-menu-content
-    onClick={(e) => e.stopPropagation()}
-    className="absolute right-3 top-10 bg-white border rounded shadow-lg z-50 min-w-[220px] overflow-hidden"
-  >
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        downloadTaskCalendar(task);
-        closeAllMenus();
-      }}
-      className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-    >
-      📅 Ajouter au calendrier
-    </button>
-
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        deleteTask(task.id);
-      }}
-      className="block w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-gray-100"
-    >
-      🗑 Supprimer la tâche
-    </button>
-
-    <div className="border-t border-gray-100 px-3 py-2">
-      <label
-        htmlFor={`task-responsible-${task.id}`}
-        className="mb-1 block text-xs font-medium text-gray-600"
-      >
-        Modifier le responsable
-      </label>
-
-      <select
-        id={`task-responsible-${task.id}`}
-        value={getTaskResponsibleEmployeeId(task)}
-        onClick={(e) => e.stopPropagation()}
-        onChange={(e) => {
-          e.stopPropagation();
-
-          if (e.target.value === "new") {
-            setNewResponsibleTaskId(task.id);
-            setNewResponsibleForm({ name: "", role: "", email: "" });
-            return;
-          }
-
-          const employeeId = Number(e.target.value);
-
-          if (!employeeId) return;
-
-          updateTaskResponsible(task, employeeId);
-        }}
-        className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900"
-      >
-        <option value="">Choisir un responsable</option>
-        <option value="new">Ajouter un nouveau responsable</option>
-
-        {employees.map((employee) => (
-          <option key={employee.id} value={employee.id}>
-            {employee.name} - {employee.role || "Sans rôle"}
-          </option>
-        ))}
-      </select>
-
-      {newResponsibleTaskId === task.id && (
-        <div
-          className="mt-3 space-y-2 border-t border-gray-100 pt-3"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <input
-            type="text"
-            value={newResponsibleForm.name}
-            onChange={(e) =>
-              setNewResponsibleForm((currentForm) => ({
-                ...currentForm,
-                name: e.target.value,
-              }))
-            }
-            placeholder="Nom complet"
-            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-          />
-
-          <input
-            type="text"
-            value={newResponsibleForm.role}
-            onChange={(e) =>
-              setNewResponsibleForm((currentForm) => ({
-                ...currentForm,
-                role: e.target.value,
-              }))
-            }
-            placeholder="Rôle"
-            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-          />
-
-          <input
-            type="email"
-            value={newResponsibleForm.email}
-            onChange={(e) =>
-              setNewResponsibleForm((currentForm) => ({
-                ...currentForm,
-                email: e.target.value,
-              }))
-            }
-            placeholder="Email"
-            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm"
-          />
-
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                createResponsibleAndAssignTask(task);
-              }}
-              className="flex-1 rounded bg-black px-3 py-1.5 text-sm text-white"
-            >
-              Créer et assigner
-            </button>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setNewResponsibleTaskId(null);
-                setNewResponsibleForm({ name: "", role: "", email: "" });
-              }}
-              className="rounded border px-3 py-1.5 text-sm"
-            >
-              Annuler
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        askAndUpdateTaskDueDate(task);
-      }}
-      className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-    >
-      Modifier l’échéance
-    </button>
-
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        sendTaskToResponsible(task);
-        closeAllMenus();
-      }}
-      className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
-    >
-      📩 Envoyer au responsable
-    </button>
-  </div>
-)}
-
-          <p className="font-semibold">
-  {task.status === "Fait" ? "✅ " : "⬜ "}
-  {task.action}
-</p>
+	          <p className="font-semibold">{task.action}</p>
 
           <p className="text-sm text-gray-600">
             Responsable : {task.responsible || "Non attribué"}
@@ -2251,10 +3079,14 @@ closeAllMenus();
   />
 </div>
 
-          <p className="text-sm text-gray-600">
-            Statut : {task.status}
-          </p>
-        </div>
+		          {task.completed_at && normalizeTaskStatus(task.status) === "Fait" && (
+		            <p className="text-sm text-green-700">
+		              Terminé le : {formatCompletedAt(task.completed_at)}
+		            </p>
+		          )}
+
+		          {renderTaskStatusBadge(task)}
+	        </div>
                  ))}
     </div>
   </div>
@@ -2379,11 +3211,7 @@ closeAllMenus();
                       onClick={(e) => {
                         e.stopPropagation();
                         closeAllMenus();
-                        downloadPDF(
-                          meeting.report,
-                          meeting.title,
-                          `compte-rendu-${meeting.id}.pdf`
-                        );
+                        downloadMeetingPDF(meeting);
                       }}
                       className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
                     >
@@ -2424,11 +3252,7 @@ closeAllMenus();
                   <button
                     onClick={() => {
                       closeAllMenus();
-                      downloadPDF(
-                        meeting.report,
-                        meeting.title,
-                        `compte-rendu-${meeting.id}.pdf`
-                      );
+                      downloadMeetingPDF(meeting);
                     }}
                     className="px-3 py-1 border rounded text-sm"
                   >
@@ -2541,31 +3365,55 @@ closeAllMenus();
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      <div className="whitespace-pre-wrap text-sm">
-                        {historyMessage}
-                      </div>
-                    )}
+	                    ) : (
+	                      renderReportContent(historyMessage)
+	                    )}
 
                     {historyTasks.length > 0 && (
                       <div className="mt-4 rounded border bg-white p-3">
                         <h4 className="mb-2 font-semibold">Tâches</h4>
                         <div className="space-y-2">
-                          {historyTasks.map((task) => (
-                            <div key={task.id} className="rounded border p-2">
-                              <p className="font-medium">{task.action}</p>
-                              <p className="text-sm text-gray-600">
-                                Responsable :{" "}
-                                {task.responsible || "Non attribué"}
-                              </p>
-                              <p className="text-sm text-gray-600">
-                                Échéance : {task.due_date || "Non renseignée"}
-                              </p>
-                              <p className="text-sm text-gray-600">
-                                Statut : {task.status}
-                              </p>
-                            </div>
-                          ))}
+                          {historyTasks.map((task) => {
+	                            const isCompleted =
+	                              normalizeTaskStatus(task.status) === "Fait";
+
+                            return (
+	                              <div
+	                                key={task.id}
+	                                className={`relative rounded border p-2 pr-12 ${getTaskDueDateClass(
+	                                  task
+	                                )}`}
+	                              >
+	                                {renderTaskMenu(task)}
+
+	                                <div className="flex flex-wrap items-start justify-between gap-2">
+                                  <p
+                                    className={`font-medium ${
+                                      isCompleted ? "text-green-800" : ""
+                                    }`}
+                                  >
+                                    {task.action}
+                                  </p>
+
+	                                  {renderTaskStatusBadge(task, "mt-0")}
+	                                </div>
+
+                                <p className="text-sm text-gray-600">
+                                  Responsable :{" "}
+                                  {task.responsible || "Non attribué"}
+                                </p>
+                                <p className="text-sm text-gray-600">
+                                  Échéance : {task.due_date || "Non renseignée"}
+                                </p>
+	                                {isCompleted && task.completed_at && (
+	                                  <p className="text-sm text-green-700">
+	                                    Terminé le :{" "}
+	                                    {formatCompletedAt(task.completed_at)}
+	                                  </p>
+	                                )}
+	                              </div>
+	                            );
+	                          })}
                         </div>
                       </div>
                     )}
@@ -2595,7 +3443,7 @@ closeAllMenus();
 
       {(() => {
         const pendingTasks = bulkTaskSource.filter(
-          (task) => task.status !== "Fait"
+          (task) => normalizeTaskStatus(task.status) !== "Fait"
         );
         const groupedTasks = new Map<
           string,
@@ -2649,34 +3497,40 @@ closeAllMenus();
                     </p>
                   </div>
 
-                  <div className="space-y-2">
-                    {group.tasks.map((task) => (
-                      <label key={task.id} className="flex gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={selectedBulkTaskIds.includes(task.id)}
-                          disabled={!hasEmail}
-                          onChange={() => {
-                            if (selectedBulkTaskIds.includes(task.id)) {
-                              setSelectedBulkTaskIds(
-                                selectedBulkTaskIds.filter((id) => id !== task.id)
-                              );
-                            } else {
-                              setSelectedBulkTaskIds([
-                                ...selectedBulkTaskIds,
-                                task.id,
-                              ]);
-                            }
-                          }}
-                        />
+	                  <div className="space-y-2">
+	                    {group.tasks.map((task) => (
+	                      <div
+	                        key={task.id}
+	                        className="relative flex gap-2 rounded border p-2 pr-12 text-sm"
+	                      >
+	                        {renderTaskMenu(task)}
 
-                        <span>
-                          {task.action}
-                          {task.due_date ? ` - ${task.due_date}` : ""}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+	                        <input
+	                          id={`bulk-task-${task.id}`}
+	                          type="checkbox"
+	                          checked={selectedBulkTaskIds.includes(task.id)}
+	                          disabled={!hasEmail}
+	                          onChange={() => {
+	                            if (selectedBulkTaskIds.includes(task.id)) {
+	                              setSelectedBulkTaskIds(
+	                                selectedBulkTaskIds.filter((id) => id !== task.id)
+	                              );
+	                            } else {
+	                              setSelectedBulkTaskIds([
+	                                ...selectedBulkTaskIds,
+	                                task.id,
+	                              ]);
+	                            }
+	                          }}
+	                        />
+
+	                        <label htmlFor={`bulk-task-${task.id}`}>
+	                          {task.action}
+	                          {task.due_date ? ` - ${task.due_date}` : ""}
+	                        </label>
+	                      </div>
+	                    ))}
+	                  </div>
                 </div>
               );
             })}
@@ -2699,6 +3553,226 @@ closeAllMenus();
           className="rounded bg-black px-4 py-2 text-white"
         >
           Envoyer les tâches cochées
+        </button>
+      </div>
+    </div>
+	  </div>
+)}
+{showReminderModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-lg bg-white p-6">
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <h2 className="text-2xl font-bold">Relancer les tâches</h2>
+
+        <button
+          type="button"
+	          onClick={closeReminderModal}
+          className="rounded border px-3 py-1"
+        >
+          Fermer
+        </button>
+      </div>
+
+	      {(() => {
+	        const today = getLocalDateIso();
+	        const uniqueReminderTasks = dedupeTasksById(reminderTaskSource);
+	        const sortByDueDate = (sourceTasks: Task[]) =>
+	          [...sourceTasks].sort((firstTask, secondTask) => {
+	            const firstDueDate = firstTask.due_date || "9999-12-31";
+	            const secondDueDate = secondTask.due_date || "9999-12-31";
+	            return firstDueDate.localeCompare(secondDueDate);
+	          });
+	        const overdueTasks = sortByDueDate(
+	          uniqueReminderTasks.filter(
+	            (task) => Boolean(task.due_date) && task.due_date! < today
+	          )
+	        );
+	        const overdueTaskIds = new Set(overdueTasks.map((task) => task.id));
+	        const inProgressTasks = sortByDueDate(
+	          uniqueReminderTasks.filter(
+	            (task) =>
+	              !overdueTaskIds.has(task.id) &&
+	              normalizeTaskStatus(task.status) === "En cours"
+	          )
+	        );
+	        const inProgressTaskIds = new Set(
+	          inProgressTasks.map((task) => task.id)
+	        );
+	        const todoTasks = sortByDueDate(
+	          uniqueReminderTasks.filter(
+	            (task) =>
+	              !overdueTaskIds.has(task.id) &&
+	              !inProgressTaskIds.has(task.id) &&
+	              normalizeTaskStatus(task.status) === "À faire"
+	          )
+	        );
+	        const otherTasks = dedupeTasksById([
+	          ...inProgressTasks,
+	          ...todoTasks,
+	        ]);
+	        const getTaskEmployee = (task: Task) =>
+	          task.responsible_employee_id
+	            ? employees.find(
+	                (currentEmployee) =>
+	                  currentEmployee.id === task.responsible_employee_id
+	              ) || null
+	            : null;
+	        const renderReminderTask = (task: Task, label: string) => {
+	          const employee = getTaskEmployee(task);
+	          const hasEmail = Boolean(employee?.email?.trim());
+
+	          return (
+	            <label
+	              key={task.id}
+	              className="flex items-start gap-2 rounded border bg-white p-2 text-sm"
+	            >
+	              <input
+	                type="checkbox"
+	                checked={selectedReminderTaskIds.includes(task.id)}
+	                onChange={() => {
+	                  if (selectedReminderTaskIds.includes(task.id)) {
+	                    setSelectedReminderTaskIds(
+	                      selectedReminderTaskIds.filter((id) => id !== task.id)
+	                    );
+	                  } else {
+	                    setSelectedReminderTaskIds([
+	                      ...new Set([...selectedReminderTaskIds, task.id]),
+	                    ]);
+	                  }
+	                }}
+	              />
+
+	              <span className="min-w-0 flex-1">
+	                <span className="font-medium">{task.action}</span>
+	                <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+	                  {label}
+	                </span>
+	                <span className="block text-gray-600">
+	                  Responsable : {employee?.name || task.responsible || "Non attribué"}
+	                </span>
+	                <span
+	                  className={`block text-gray-600 ${
+	                    hasEmail ? "" : "text-red-600"
+	                  }`}
+	                >
+	                  {hasEmail ? employee?.email : "Email manquant"}
+	                </span>
+	                <span className="block text-gray-600">
+	                  Échéance : {task.due_date || "Non renseignée"}
+	                </span>
+	              </span>
+	            </label>
+	          );
+	        };
+	        const reminderSections = [
+	          {
+	            title: "Tâches en retard",
+	            label: "En retard",
+	            tasks: overdueTasks,
+	            className: "border-red-200 bg-red-50",
+	          },
+	          ...(showOtherReminderTasks
+	            ? [
+	                {
+	                  title: "Tâches en cours",
+	                  label: "En cours",
+	                  tasks: inProgressTasks,
+	                  className: "border-orange-200 bg-orange-50",
+	                },
+	                {
+	                  title: "Tâches à faire",
+	                  label: "À faire",
+	                  tasks: todoTasks,
+	                  className: "border-blue-200 bg-blue-50",
+	                },
+	              ]
+	            : []),
+	        ];
+
+        return (
+          <>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-gray-600">
+                Les tâches en retard sont cochées par défaut.
+              </p>
+
+	              <button
+	                type="button"
+	                onClick={() => {
+	                  if (showOtherReminderTasks) {
+	                    setSelectedReminderTaskIds((currentIds) =>
+	                      currentIds.filter((id) => overdueTaskIds.has(id))
+	                    );
+	                  }
+
+	                  setShowOtherReminderTasks((currentValue) => !currentValue);
+	                }}
+	                className="rounded border px-3 py-1 text-sm"
+	              >
+	                {showOtherReminderTasks
+	                  ? "Masquer les autres tâches"
+	                  : `Afficher les autres tâches (${otherTasks.length})`}
+	              </button>
+            </div>
+
+            {overdueTasks.length === 0 && (
+              <p className="mb-4 rounded border bg-gray-50 p-3 text-sm text-gray-600">
+                Aucune tâche en retard à relancer.
+              </p>
+            )}
+
+	            <div className="space-y-4">
+	              {reminderSections.map((section) => (
+	                <section
+	                  key={section.title}
+	                  className={`rounded border p-4 ${section.className}`}
+	                >
+	                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+	                    <h3 className="font-semibold">{section.title}</h3>
+	                    <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-gray-700">
+	                      {section.tasks.length}
+	                    </span>
+	                  </div>
+
+	                  {section.tasks.length === 0 ? (
+	                    <p className="text-sm text-gray-600">
+	                      Aucune tâche dans cette catégorie.
+	                    </p>
+	                  ) : (
+	                    <div className="space-y-2">
+	                      {section.tasks.map((task) =>
+	                        renderReminderTask(task, section.label)
+	                      )}
+	                    </div>
+	                  )}
+	                </section>
+	              ))}
+	            </div>
+
+            {reminderStatus && (
+              <p className="mt-4 rounded border bg-gray-50 p-3 text-sm text-gray-700">
+                {reminderStatus}
+              </p>
+            )}
+          </>
+        );
+      })()}
+
+      <div className="mt-6 flex justify-end gap-3">
+        <button
+          type="button"
+	          onClick={closeReminderModal}
+          className="rounded border px-4 py-2"
+        >
+          Annuler
+        </button>
+
+        <button
+          type="button"
+          onClick={confirmReminderEmails}
+          className="rounded bg-black px-4 py-2 text-white"
+        >
+          Envoyer les relances
         </button>
       </div>
     </div>
