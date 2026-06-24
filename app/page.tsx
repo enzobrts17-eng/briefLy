@@ -1234,7 +1234,7 @@ const filteredTasks = tasks.filter((task) => {
 
   return (
     <main className="min-h-screen flex flex-col items-center p-8">
-      <h1 className="text-4xl font-bold mt-12 mb-6">Réunion AI</h1>
+      <h1 className="text-4xl font-bold mt-12 mb-6">Briefly</h1>
 
       <p className="mb-8 text-center">
         Transformez vos réunions audio en comptes rendus clairs.
