@@ -48,6 +48,8 @@ type MeetingParticipantRow = {
   employees: Employee | Employee[] | null;
 };
 
+type AppSection = "new" | "report" | "history" | "collaborators";
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
@@ -70,6 +72,7 @@ const [showEmailModal, setShowEmailModal] = useState(false);
 const [emailRecipients, setEmailRecipients] = useState<number[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [activeSection, setActiveSection] = useState<AppSection>("new");
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -1240,7 +1243,34 @@ const filteredTasks = tasks.filter((task) => {
         Transformez vos réunions audio en comptes rendus clairs.
       </p>
 
-      <div className="flex gap-3 mb-6">
+      <nav className="mb-8 flex flex-wrap justify-center gap-2">
+        {[
+          ["new", "Nouvelle réunion"],
+          ["report", "Compte rendu ouvert"],
+          ["history", "Historique"],
+          ["collaborators", "Collaborateurs"],
+        ].map(([section, label]) => (
+          <button
+            key={section}
+            type="button"
+            onClick={() => {
+              closeAllMenus();
+              setActiveSection(section as AppSection);
+            }}
+            className={`rounded px-4 py-2 text-sm ${
+              activeSection === section ? "bg-black text-white" : "border"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {activeSection === "new" && (
+        <section className="flex w-full max-w-3xl flex-col items-center rounded-lg border p-8 text-center">
+          <h2 className="text-2xl font-bold">Nouvelle réunion</h2>
+
+      <div className="mt-6 flex justify-center">
         {!isRecording ? (
           <button
             onClick={startRecording}
@@ -1259,26 +1289,29 @@ const filteredTasks = tasks.filter((task) => {
       </div>
 
       {isRecording && (
-        <p className="mb-4 text-red-600 font-semibold">
+        <p className="mt-4 text-red-600 font-semibold">
           Enregistrement en cours...
         </p>
       )}
 
-      <p className="mb-3 text-sm text-gray-500">ou importe un fichier audio :</p>
+      <p className="mt-6 text-sm text-gray-500">ou importe un fichier audio :</p>
 
-      <input
-        type="file"
-        accept="audio/*"
-        onChange={(e) => {
-          const selectedFile = e.target.files?.[0];
+      <div className="mt-3 flex justify-center">
+        <input
+          type="file"
+          accept="audio/*"
+          onChange={(e) => {
+            const selectedFile = e.target.files?.[0];
 
-          if (selectedFile) {
-            setFile(selectedFile);
-            setMessage("");
-            setCurrentTitle("");
-          }
-        }}
-      />
+            if (selectedFile) {
+              setFile(selectedFile);
+              setMessage("");
+              setCurrentTitle("");
+            }
+          }}
+          className="max-w-full text-sm"
+        />
+      </div>
 
       {file && (
         <p className="mt-4">
@@ -1286,24 +1319,39 @@ const filteredTasks = tasks.filter((task) => {
         </p>
       )}
 
+      <button
+        onClick={handleUpload}
+        className="mt-8 px-4 py-2 bg-black text-white rounded"
+      >
+        Générer le compte rendu
+      </button>
+        </section>
+      )}
+
+      {activeSection === "collaborators" && (
+        <section className="w-full max-w-3xl rounded-lg border p-6">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-2xl font-bold">Collaborateurs</h2>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingEmployee(null);
+                setEmployeeForm({ name: "", role: "", email: "" });
+                setShowEmployeeModal(true);
+              }}
+              className="px-3 py-1 border rounded text-sm"
+            >
+              Ajouter
+            </button>
+          </div>
+
       {employees.length > 0 && (
-        <div className="mt-6 border rounded-lg p-4 max-w-md w-full">
+        <div className="border rounded-lg p-4 w-full">
           
 
           <div className="flex items-center justify-between mb-3">
   <h3 className="font-bold">Participants présents</h3>
-
-  <button
-    type="button"
-    onClick={() => {
-      setEditingEmployee(null);
-      setEmployeeForm({ name: "", role: "", email: "" });
-      setShowEmployeeModal(true);
-    }}
-    className="px-2 py-1 border rounded text-sm"
-  >
-    +
-  </button>
 </div>
           <input
   type="text"
@@ -1400,6 +1448,12 @@ closeAllMenus();
           ))}
         </div>
       )}
+
+      {employees.length === 0 && (
+        <p className="text-sm text-gray-600">
+          Aucun collaborateur enregistré pour le moment.
+        </p>
+      )}
       
       {selectedEmployeeProfile &&
   (() => {
@@ -1472,12 +1526,18 @@ closeAllMenus();
     );
   })()}
 
-      <button
-        onClick={handleUpload}
-        className="mt-6 px-4 py-2 bg-black text-white rounded"
-      >
-        Générer le compte rendu
-      </button>
+        </section>
+      )}
+
+      {activeSection === "report" && (
+        <section className="w-full max-w-3xl rounded-lg border p-6">
+          <h2 className="mb-4 text-2xl font-bold">Compte rendu ouvert</h2>
+
+          {!message && (
+            <p className="text-sm text-gray-600">
+              Aucun compte rendu n’est ouvert pour le moment.
+            </p>
+          )}
 
       {message && message !== "Génération du compte rendu..." && (
   <div className="flex gap-3 mt-4">
@@ -1899,12 +1959,20 @@ closeAllMenus();
     )}
   </div>
 )}
+        </section>
+      )}
 
 
 
-      {meetings.length > 0 && (
-        <section className="mt-10 max-w-3xl w-full">
+      {activeSection === "history" && (
+        <section className="w-full max-w-3xl rounded-lg border p-6">
           <h2 className="text-2xl font-bold mb-4">Historique des réunions</h2>
+          {meetings.length === 0 ? (
+            <p className="text-sm text-gray-600">
+              Aucune réunion enregistrée pour le moment.
+            </p>
+          ) : (
+            <>
           <div className="flex gap-2 mb-4 flex-wrap">
   <button
     onClick={() => setMeetingFilter("all")}
@@ -2076,6 +2144,8 @@ closeAllMenus();
               </div>
             ))}
           </div>
+            </>
+          )}
         </section>
       )}
 {showEmailModal && (
