@@ -60,6 +60,7 @@ export default function Home() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [selectedEmployees, setSelectedEmployees] = useState<number[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState("");
+  const [participantSearch, setParticipantSearch] = useState("");
   const [meetingSearch, setMeetingSearch] = useState("");
   const [meetingFilter, setMeetingFilter] = useState<
   "all" | "today" | "week" | "month"
@@ -69,7 +70,9 @@ export default function Home() {
   const [isEditing, setIsEditing] = useState(false);
 const [emailStatus, setEmailStatus] = useState("");
 const [showEmailModal, setShowEmailModal] = useState(false);
+const [showParticipantsModal, setShowParticipantsModal] = useState(false);
 const [emailRecipients, setEmailRecipients] = useState<number[]>([]);
+const [pendingParticipantIds, setPendingParticipantIds] = useState<number[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeSection, setActiveSection] = useState<AppSection>("new");
@@ -464,7 +467,8 @@ async function deleteEmployee(id: number) {
   title: string,
   report: string,
   fileName: string,
-  tasks: TaskFromAI[] = []
+  tasks: TaskFromAI[] = [],
+  participantIds: number[] = selectedEmployees
 ) {
     const { data, error } = await supabase
       .from("meetings")
@@ -485,7 +489,7 @@ if (data) {
   setCurrentMeetingId(data.id);
 
   const selectedParticipants = employees.filter((employee) =>
-    selectedEmployees.includes(employee.id)
+    participantIds.includes(employee.id)
   );
 
   setCurrentParticipants(selectedParticipants);
@@ -495,8 +499,8 @@ if (data) {
 if (data) {
   await saveTasks(data.id, tasks);
 }
-    if (data && selectedEmployees.length > 0) {
-      const participantsToInsert = selectedEmployees.map((employeeId) => ({
+    if (data && participantIds.length > 0) {
+      const participantsToInsert = participantIds.map((employeeId) => ({
         meeting_id: data.id,
         employee_id: employeeId,
       }));
@@ -513,14 +517,6 @@ if (data) {
    
     await loadMeetings();
     return data.id;
-  }
-
-  function toggleEmployee(employeeId: number) {
-    if (selectedEmployees.includes(employeeId)) {
-      setSelectedEmployees(selectedEmployees.filter((id) => id !== employeeId));
-    } else {
-      setSelectedEmployees([...selectedEmployees, employeeId]);
-    }
   }
 
   async function startRecording() {
@@ -573,7 +569,7 @@ if (data) {
     }
   }
 
-  async function handleUpload() {
+  async function handleUpload(participantIds: number[] = selectedEmployees) {
     if (!file) {
       setMessage("Choisis ou enregistre un fichier audio.");
       return;
@@ -584,7 +580,7 @@ if (data) {
       setMessage("Génération du compte rendu...");
 
       const selectedParticipants = employees.filter((employee) =>
-        selectedEmployees.includes(employee.id)
+        participantIds.includes(employee.id)
       );
 
       const participantsText =
@@ -628,7 +624,8 @@ const savedMeetingId = await saveMeeting(
   data.title,
   data.report,
   file.name,
-  data.tasks || []
+  data.tasks || [],
+  participantIds
 );
 
 if (savedMeetingId) {
@@ -1188,6 +1185,15 @@ const filteredEmployees = employees.filter((employee) => {
     employee.role.toLowerCase().includes(search)
   );
 });
+const filteredParticipantEmployees = employees.filter((employee) => {
+  const search = participantSearch.toLowerCase();
+
+  return (
+    employee.name.toLowerCase().includes(search) ||
+    employee.role.toLowerCase().includes(search) ||
+    employee.email?.toLowerCase().includes(search)
+  );
+});
 const filteredMeetings = meetings.filter((meeting) => {
   const search = meetingSearch.toLowerCase();
 
@@ -1320,7 +1326,11 @@ const filteredTasks = tasks.filter((task) => {
       )}
 
       <button
-        onClick={handleUpload}
+        onClick={() => {
+          setPendingParticipantIds(selectedEmployees);
+          setParticipantSearch("");
+          setShowParticipantsModal(true);
+        }}
         className="mt-8 px-4 py-2 bg-black text-white rounded"
       >
         Générer le compte rendu
@@ -1348,11 +1358,6 @@ const filteredTasks = tasks.filter((task) => {
 
       {employees.length > 0 && (
         <div className="border rounded-lg p-4 w-full">
-          
-
-          <div className="flex items-center justify-between mb-3">
-  <h3 className="font-bold">Participants présents</h3>
-</div>
           <input
   type="text"
   placeholder="🔍 Rechercher un collaborateur..."
@@ -1362,16 +1367,10 @@ const filteredTasks = tasks.filter((task) => {
  />
 
           {filteredEmployees.map((employee) => (
-            <label
+            <div
   key={employee.id}
   className="flex items-center justify-between gap-2 mb-2"
 >
-              <input
-                type="checkbox"
-                checked={selectedEmployees.includes(employee.id)}
-                onChange={() => toggleEmployee(employee.id)}
-              />
-
               <button
   type="button"
   onClick={(e) => {
@@ -1444,7 +1443,7 @@ closeAllMenus();
     </div>
   )}
 </div>
-            </label>
+            </div>
           ))}
         </div>
       )}
@@ -2148,6 +2147,88 @@ closeAllMenus();
           )}
         </section>
       )}
+{showParticipantsModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="w-full max-w-2xl rounded-lg bg-white p-6">
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <h2 className="text-2xl font-bold">
+          Quels collaborateurs étaient présents ?
+        </h2>
+
+        <button
+          type="button"
+          onClick={() => setShowParticipantsModal(false)}
+          className="px-3 py-1 border rounded"
+        >
+          Fermer
+        </button>
+      </div>
+
+      <input
+        type="text"
+        placeholder="🔍 Rechercher un collaborateur..."
+        value={participantSearch}
+        onChange={(e) => setParticipantSearch(e.target.value)}
+        className="mb-4 w-full rounded border p-2"
+      />
+
+      <div className="max-h-[45vh] space-y-2 overflow-auto">
+        {filteredParticipantEmployees.length === 0 ? (
+          <p className="text-sm text-gray-600">Aucun collaborateur trouvé.</p>
+        ) : (
+          filteredParticipantEmployees.map((employee) => (
+            <label key={employee.id} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={pendingParticipantIds.includes(employee.id)}
+                onChange={() => {
+                  if (pendingParticipantIds.includes(employee.id)) {
+                    setPendingParticipantIds(
+                      pendingParticipantIds.filter((id) => id !== employee.id)
+                    );
+                  } else {
+                    setPendingParticipantIds([
+                      ...pendingParticipantIds,
+                      employee.id,
+                    ]);
+                  }
+                }}
+              />
+
+              <span>
+                {employee.name}
+                {employee.role ? ` (${employee.role})` : ""}
+                {employee.email ? ` - ${employee.email}` : ""}
+              </span>
+            </label>
+          ))
+        )}
+      </div>
+
+      <div className="mt-6 flex justify-end gap-3">
+        <button
+          type="button"
+          onClick={() => setShowParticipantsModal(false)}
+          className="px-4 py-2 border rounded"
+        >
+          Annuler
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedEmployees(pendingParticipantIds);
+            setShowParticipantsModal(false);
+            handleUpload(pendingParticipantIds);
+          }}
+          className="px-4 py-2 bg-black text-white rounded"
+        >
+          Générer le compte rendu
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 {showEmailModal && (
   <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-6 z-50">
     <div className="bg-white rounded-lg p-6 max-w-2xl w-full">
