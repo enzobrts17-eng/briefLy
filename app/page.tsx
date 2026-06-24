@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import jsPDF from "jspdf";
 import { supabase } from "../lib/supabase";
 
@@ -23,6 +23,7 @@ type TaskFromAI = {
   action: string;
   responsible?: string;
   responsible_employee_id?: number | null;
+  responsible_confidence?: number | null;
   due_date?: string;
 };
 
@@ -38,6 +39,7 @@ type Task = {
   action: string;
   responsible: string | null;
   responsible_employee_id?: number | null;
+  responsible_confidence?: number | null;
   due_date: string | null;
   status: string;
 };
@@ -72,7 +74,11 @@ const [emailRecipients, setEmailRecipients] = useState<number[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 const [openTaskMenuId, setOpenTaskMenuId] = useState<number | null>(null);
+const [openMeetingMenuId, setOpenMeetingMenuId] = useState<number | null>(null);
 const [openEmployeeMenuId, setOpenEmployeeMenuId] = useState<number | null>(null);
+const [openTrashMeetingMenuId, setOpenTrashMeetingMenuId] = useState<
+  number | null
+>(null);
 const [selectedEmployeeProfile, setSelectedEmployeeProfile] =
   useState<Employee | null>(null);
 const [selectedResponsible, setSelectedResponsible] = useState("Tous");
@@ -85,11 +91,41 @@ const [employeeForm, setEmployeeForm] = useState({
   role: "",
   email: "",
 });
+  const closeAllMenus = useCallback(() => {
+    setOpenTaskMenuId(null);
+    setOpenMeetingMenuId(null);
+    setOpenEmployeeMenuId(null);
+    setOpenTrashMeetingMenuId(null);
+  }, []);
+
   useEffect(() => {
     loadMeetings();
     loadDeletedMeetings();
     loadEmployees();
   }, []);
+
+  useEffect(() => {
+    function handleDocumentClick(event: MouseEvent) {
+      const target = event.target;
+
+      if (!(target instanceof Element)) {
+        closeAllMenus();
+        return;
+      }
+
+      if (target.closest("[data-menu-trigger], [data-menu-content]")) {
+        return;
+      }
+
+      closeAllMenus();
+    }
+
+    document.addEventListener("click", handleDocumentClick);
+
+    return () => {
+      document.removeEventListener("click", handleDocumentClick);
+    };
+  }, [closeAllMenus]);
 
   async function loadMeetings() {
     const { data, error } = await supabase
@@ -193,7 +229,7 @@ async function deleteEmployee(id: number) {
     return;
   }
 
-  setOpenEmployeeMenuId(null);
+  closeAllMenus();
   await loadEmployees();
 }
   async function deleteMeeting(id: number) {
@@ -252,33 +288,126 @@ async function deleteEmployee(id: number) {
 
     await loadDeletedMeetings();
   }
+  function normalizeText(value: string) {
+    return value
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function getRoleScore(action: string, role: string) {
+    const normalizedAction = normalizeText(action);
+    const roleWords = normalizeText(role)
+      .split(" ")
+      .filter((word) => word.length > 2);
+
+    if (roleWords.length === 0) {
+      return 0;
+    }
+
+    const matches = roleWords.filter((word) =>
+      normalizedAction.includes(word)
+    ).length;
+
+    return Math.min(30, Math.round((matches / roleWords.length) * 30));
+  }
+
+  function scoreEmployeeForTask(task: TaskFromAI, employee: Employee) {
+    const evidenceText = normalizeText(
+      `${task.responsible || ""} ${task.action}`
+    );
+    const employeeName = normalizeText(employee.name);
+    const nameParts = employeeName
+      .split(" ")
+      .filter((part) => part.length > 1);
+    const roleScore = getRoleScore(task.action, employee.role || "");
+
+    if (employeeName && evidenceText.includes(employeeName)) {
+      return 90 + Math.min(10, roleScore);
+    }
+
+    const matchedNameParts = nameParts.filter((part) =>
+      evidenceText.includes(part)
+    ).length;
+
+    if (matchedNameParts > 0) {
+      const baseScore = matchedNameParts === nameParts.length ? 85 : 65;
+      return Math.min(100, baseScore + roleScore);
+    }
+
+    return roleScore;
+  }
+
+  function findBestResponsible(task: TaskFromAI) {
+    const aiEmployee = task.responsible_employee_id
+      ? employees.find((employee) => employee.id === task.responsible_employee_id)
+      : null;
+    const aiConfidence = Math.max(
+      0,
+      Math.min(100, task.responsible_confidence ?? 0)
+    );
+
+    if (aiEmployee && aiConfidence >= 60) {
+      return {
+        employee: aiEmployee,
+        confidence: Math.max(aiConfidence, scoreEmployeeForTask(task, aiEmployee)),
+      };
+    }
+
+    const candidates = employees
+      .map((employee) => ({
+        employee,
+        confidence: scoreEmployeeForTask(task, employee),
+      }))
+      .sort((a, b) => b.confidence - a.confidence);
+    const bestCandidate = candidates[0];
+
+    if (!bestCandidate || bestCandidate.confidence < 60) {
+      return {
+        employee: null,
+        confidence: bestCandidate?.confidence || aiConfidence,
+      };
+    }
+
+    return bestCandidate;
+  }
+
+  function isMissingResponsibleConfidenceColumnError(error: unknown) {
+    if (!error || typeof error !== "object") {
+      return false;
+    }
+
+    const errorText = Object.values(error)
+      .filter((value) => typeof value === "string")
+      .join(" ")
+      .toLowerCase();
+
+    return errorText.includes("responsible_confidence");
+  }
+
+  function removeResponsibleConfidence<
+    T extends { responsible_confidence?: number | null },
+  >(row: T) {
+    const rowWithoutConfidence = { ...row };
+    delete rowWithoutConfidence.responsible_confidence;
+    return rowWithoutConfidence;
+  }
+
   async function saveTasks(meetingId: number, tasks: TaskFromAI[] = []) {
   if (!tasks || tasks.length === 0) return;
 
   const tasksToInsert = tasks.map((task) => {
-  const responsibleText = (task.responsible || "").toLowerCase();
-
-  const possibleMatches = employees.filter((employee) => {
-  const employeeName = employee.name.toLowerCase();
-  const employeeEmail = employee.email?.toLowerCase() || "";
-
-  return (
-    responsibleText === employeeName ||
-    responsibleText.includes(employeeName) ||
-    employeeName.includes(responsibleText) ||
-    (employeeEmail && responsibleText.includes(employeeEmail))
-  );
-});
-
-const matchedEmployee =
-  possibleMatches.length === 1 ? possibleMatches[0] : null;
+  const assignment = findBestResponsible(task);
 
   return {
     meeting_id: meetingId,
     action: task.action,
-    responsible: task.responsible || null,
-    responsible_employee_id:
-  task.responsible_employee_id || matchedEmployee?.id || null,
+    responsible: assignment.employee?.name || null,
+    responsible_employee_id: assignment.employee?.id || null,
+    responsible_confidence: assignment.confidence,
     due_date: task.due_date || null,
     status: "À faire",
   };
@@ -286,6 +415,21 @@ const matchedEmployee =
   const { error } = await supabase.from("tasks").insert(tasksToInsert);
 
   if (error) {
+    if (isMissingResponsibleConfidenceColumnError(error)) {
+      const tasksWithoutConfidence = tasksToInsert.map((task) =>
+        removeResponsibleConfidence(task)
+      );
+      const { error: fallbackError } = await supabase
+        .from("tasks")
+        .insert(tasksWithoutConfidence);
+
+      if (fallbackError) {
+        console.error(fallbackError);
+      }
+
+      return;
+    }
+
     console.error(error);
   }
 }
@@ -633,7 +777,7 @@ async function deleteTask(taskId: number) {
     currentTasks.filter((task) => task.id !== taskId)
   );
 
-  setOpenTaskMenuId(null);
+  closeAllMenus();
 }
 async function updateTaskDueDate(taskId: number, dueDate: string) {
   const { error } = await supabase
@@ -662,15 +806,47 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
     return;
   }
 
+  const updatePayload = {
+    responsible: employee.name,
+    responsible_employee_id: employee.id,
+    responsible_confidence: 100,
+  };
+
   const { error } = await supabase
     .from("tasks")
-    .update({
-      responsible: employee.name,
-      responsible_employee_id: employee.id,
-    })
+    .update(updatePayload)
     .eq("id", task.id);
 
   if (error) {
+    if (isMissingResponsibleConfidenceColumnError(error)) {
+      const { error: fallbackError } = await supabase
+        .from("tasks")
+        .update(removeResponsibleConfidence(updatePayload))
+        .eq("id", task.id);
+
+      if (!fallbackError) {
+        setTasks((currentTasks) =>
+          currentTasks.map((currentTask) =>
+            currentTask.id === task.id
+              ? {
+                  ...currentTask,
+                  responsible: employee.name,
+                  responsible_employee_id: employee.id,
+                  responsible_confidence: 100,
+                }
+              : currentTask
+          )
+        );
+
+        closeAllMenus();
+        return;
+      }
+
+      console.error(fallbackError);
+      alert("Erreur lors de la modification du responsable.");
+      return;
+    }
+
     console.error(error);
     alert("Erreur lors de la modification du responsable.");
     return;
@@ -683,12 +859,13 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
             ...currentTask,
             responsible: employee.name,
             responsible_employee_id: employee.id,
+            responsible_confidence: 100,
           }
         : currentTask
     )
   );
 
-  setOpenTaskMenuId(null);
+  closeAllMenus();
 }
 
 function getTaskResponsibleEmployeeId(task: Task) {
@@ -709,6 +886,30 @@ function getTaskResponsibleEmployeeId(task: Task) {
   );
 }
 
+function getTaskConfidenceBadgeClass(confidence: number | null | undefined) {
+  if (confidence === null || confidence === undefined) {
+    return "bg-gray-100 text-gray-600 border-gray-200";
+  }
+
+  if (confidence >= 80) {
+    return "bg-green-100 text-green-700 border-green-200";
+  }
+
+  if (confidence >= 60) {
+    return "bg-orange-100 text-orange-700 border-orange-200";
+  }
+
+  return "bg-red-100 text-red-700 border-red-200";
+}
+
+function getTaskConfidenceLabel(confidence: number | null | undefined) {
+  if (confidence === null || confidence === undefined) {
+    return "Score indisponible";
+  }
+
+  return `Confiance ${confidence}%`;
+}
+
 async function askAndUpdateTaskDueDate(task: Task) {
   const dueDate = prompt(
     "Nouvelle échéance au format AAAA-MM-JJ :",
@@ -718,7 +919,7 @@ async function askAndUpdateTaskDueDate(task: Task) {
   if (dueDate === null) return;
 
   await updateTaskDueDate(task.id, dueDate);
-  setOpenTaskMenuId(null);
+  closeAllMenus();
 }
 async function sendTaskToResponsible(task: Task) {
   if (!task.responsible) {
@@ -1008,11 +1209,18 @@ const filteredTasks = tasks.filter((task) => {
               <div className="relative">
   <button
     type="button"
+    data-menu-trigger
     onClick={(e) => {
       e.preventDefault();
-      setOpenEmployeeMenuId(
-        openEmployeeMenuId === employee.id ? null : employee.id
-      );
+      e.stopPropagation();
+
+      const shouldOpenMenu = openEmployeeMenuId !== employee.id;
+
+      closeAllMenus();
+
+      if (shouldOpenMenu) {
+        setOpenEmployeeMenuId(employee.id);
+      }
     }}
     className="px-2 text-gray-500 hover:text-black"
   >
@@ -1020,11 +1228,16 @@ const filteredTasks = tasks.filter((task) => {
   </button>
 
   {openEmployeeMenuId === employee.id && (
-    <div className="absolute right-0 mt-1 bg-white border rounded shadow z-50 min-w-[120px]">
+    <div
+      data-menu-content
+      onClick={(e) => e.stopPropagation()}
+      className="absolute right-0 mt-1 bg-white border rounded shadow z-50 min-w-[120px]"
+    >
       <button
         type="button"
         onClick={(e) => {
           e.preventDefault();
+          e.stopPropagation();
         setEditingEmployee(employee);
 setEmployeeForm({
   name: employee.name,
@@ -1032,7 +1245,7 @@ setEmployeeForm({
   email: employee.email || "",
 });
 setShowEmployeeModal(true);
-setOpenEmployeeMenuId(null);
+closeAllMenus();
         }}
         className="block w-full text-left px-3 py-2 hover:bg-gray-100"
       >
@@ -1043,6 +1256,8 @@ setOpenEmployeeMenuId(null);
         type="button"
         onClick={(e) => {
           e.preventDefault();
+          e.stopPropagation();
+          closeAllMenus();
           deleteEmployee(employee.id);
         }}
         className="block w-full text-left px-3 py-2 text-red-600 hover:bg-gray-100"
@@ -1335,11 +1550,19 @@ setOpenEmployeeMenuId(null);
 >
           <button
   type="button"
+  data-menu-trigger
   aria-label={`Ouvrir le menu de la tâche ${task.action}`}
   aria-expanded={openTaskMenuId === task.id}
   onClick={(e) => {
     e.stopPropagation();
-    setOpenTaskMenuId(openTaskMenuId === task.id ? null : task.id);
+
+    const shouldOpenMenu = openTaskMenuId !== task.id;
+
+    closeAllMenus();
+
+    if (shouldOpenMenu) {
+      setOpenTaskMenuId(task.id);
+    }
   }}
   className="absolute top-3 right-3 px-2 text-gray-500 hover:text-black"
 >
@@ -1348,6 +1571,7 @@ setOpenEmployeeMenuId(null);
 
           {openTaskMenuId === task.id && (
   <div
+    data-menu-content
     onClick={(e) => e.stopPropagation()}
     className="absolute right-3 top-10 bg-white border rounded shadow-lg z-50 min-w-[220px] overflow-hidden"
   >
@@ -1356,7 +1580,7 @@ setOpenEmployeeMenuId(null);
       onClick={(e) => {
         e.stopPropagation();
         downloadTaskCalendar(task);
-        setOpenTaskMenuId(null);
+        closeAllMenus();
       }}
       className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
     >
@@ -1423,7 +1647,7 @@ setOpenEmployeeMenuId(null);
       onClick={(e) => {
         e.stopPropagation();
         sendTaskToResponsible(task);
-        setOpenTaskMenuId(null);
+        closeAllMenus();
       }}
       className="block w-full text-left px-3 py-2 text-sm hover:bg-gray-100"
     >
@@ -1437,8 +1661,18 @@ setOpenEmployeeMenuId(null);
   {task.action}
 </p>
 
-          <p className="text-sm text-gray-600">
-            Responsable : {task.responsible || "Non mentionné"}
+          <p className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+            <span>
+              Responsable : {task.responsible || "Non attribué"}
+            </span>
+
+            <span
+              className={`rounded border px-2 py-0.5 text-xs font-medium ${getTaskConfidenceBadgeClass(
+                task.responsible_confidence
+              )}`}
+            >
+              {getTaskConfidenceLabel(task.responsible_confidence)}
+            </span>
           </p>
 
           <div
@@ -1533,7 +1767,76 @@ setOpenEmployeeMenuId(null);
             {filteredMeetings
   .filter((meeting) => meeting.id !== currentMeetingId)
   .map((meeting) => (
-              <div key={meeting.id} className="border rounded-lg p-4">
+              <div key={meeting.id} className="relative border rounded-lg p-4 pr-12">
+                <button
+                  type="button"
+                  data-menu-trigger
+                  aria-label={`Ouvrir le menu de la réunion ${meeting.title}`}
+                  aria-expanded={openMeetingMenuId === meeting.id}
+                  onClick={(e) => {
+                    e.stopPropagation();
+
+                    const shouldOpenMenu = openMeetingMenuId !== meeting.id;
+
+                    closeAllMenus();
+
+                    if (shouldOpenMenu) {
+                      setOpenMeetingMenuId(meeting.id);
+                    }
+                  }}
+                  className="absolute top-3 right-3 px-2 text-gray-500 hover:text-black"
+                >
+                  ⋯
+                </button>
+
+                {openMeetingMenuId === meeting.id && (
+                  <div
+                    data-menu-content
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute right-3 top-10 z-50 min-w-[180px] overflow-hidden rounded border bg-white shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeAllMenus();
+                        openMeeting(meeting);
+                      }}
+                      className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+                    >
+                      Ouvrir
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeAllMenus();
+                        downloadPDF(
+                          meeting.report,
+                          meeting.title,
+                          `compte-rendu-${meeting.id}.pdf`
+                        );
+                      }}
+                      className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+                    >
+                      PDF
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        closeAllMenus();
+                        deleteMeeting(meeting.id);
+                      }}
+                      className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100"
+                    >
+                      Supprimer
+                    </button>
+                  </div>
+                )}
+
                 <p className="font-semibold">{meeting.title}</p>
                 <p className="text-sm text-gray-500">
                   {new Date(meeting.created_at).toLocaleString("fr-FR")}
@@ -1542,27 +1845,34 @@ setOpenEmployeeMenuId(null);
 
                 <div className="flex gap-3 mt-3">
                   <button
-                    onClick={() => openMeeting(meeting)}
+                    onClick={() => {
+                      closeAllMenus();
+                      openMeeting(meeting);
+                    }}
                     className="px-3 py-1 bg-black text-white rounded text-sm"
                   >
                     Ouvrir
                   </button>
 
                   <button
-                    onClick={() =>
+                    onClick={() => {
+                      closeAllMenus();
                       downloadPDF(
                         meeting.report,
                         meeting.title,
                         `compte-rendu-${meeting.id}.pdf`
-                      )
-                    }
+                      );
+                    }}
                     className="px-3 py-1 border rounded text-sm"
                   >
                     PDF
                   </button>
 
                   <button
-                    onClick={() => deleteMeeting(meeting.id)}
+                    onClick={() => {
+                      closeAllMenus();
+                      deleteMeeting(meeting.id);
+                    }}
                     className="px-3 py-1 bg-red-600 text-white rounded text-sm"
                   >
                     Supprimer
@@ -1645,7 +1955,10 @@ setOpenEmployeeMenuId(null);
               <h2 className="text-2xl font-bold">Corbeille</h2>
 
               <button
-                onClick={() => setShowTrash(false)}
+                onClick={() => {
+                  closeAllMenus();
+                  setShowTrash(false);
+                }}
                 className="px-3 py-1 border rounded"
               >
                 Fermer
@@ -1657,7 +1970,64 @@ setOpenEmployeeMenuId(null);
             ) : (
               <div className="space-y-3">
                 {deletedMeetings.map((meeting) => (
-                  <div key={meeting.id} className="border rounded-lg p-4">
+                  <div
+                    key={meeting.id}
+                    className="relative border rounded-lg p-4 pr-12"
+                  >
+                    <button
+                      type="button"
+                      data-menu-trigger
+                      aria-label={`Ouvrir le menu de la réunion ${meeting.title}`}
+                      aria-expanded={openTrashMeetingMenuId === meeting.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+
+                        const shouldOpenMenu =
+                          openTrashMeetingMenuId !== meeting.id;
+
+                        closeAllMenus();
+
+                        if (shouldOpenMenu) {
+                          setOpenTrashMeetingMenuId(meeting.id);
+                        }
+                      }}
+                      className="absolute top-3 right-3 px-2 text-gray-500 hover:text-black"
+                    >
+                      ⋯
+                    </button>
+
+                    {openTrashMeetingMenuId === meeting.id && (
+                      <div
+                        data-menu-content
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute right-3 top-10 z-50 min-w-[220px] overflow-hidden rounded border bg-white shadow-lg"
+                      >
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeAllMenus();
+                            restoreMeeting(meeting.id);
+                          }}
+                          className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+                        >
+                          Restaurer
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeAllMenus();
+                            permanentlyDeleteMeeting(meeting.id);
+                          }}
+                          className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100"
+                        >
+                          Supprimer définitivement
+                        </button>
+                      </div>
+                    )}
+
                     <p className="font-semibold">{meeting.title}</p>
                     <p className="text-sm text-gray-500">
                       {new Date(meeting.created_at).toLocaleString("fr-FR")}
@@ -1668,14 +2038,20 @@ setOpenEmployeeMenuId(null);
 
                     <div className="flex gap-3 mt-3">
                       <button
-                        onClick={() => restoreMeeting(meeting.id)}
+                        onClick={() => {
+                          closeAllMenus();
+                          restoreMeeting(meeting.id);
+                        }}
                         className="px-3 py-1 bg-black text-white rounded text-sm"
                       >
                         Restaurer
                       </button>
 
                       <button
-                        onClick={() => permanentlyDeleteMeeting(meeting.id)}
+                        onClick={() => {
+                          closeAllMenus();
+                          permanentlyDeleteMeeting(meeting.id);
+                        }}
                         className="px-3 py-1 bg-red-600 text-white rounded text-sm"
                       >
                         Supprimer définitivement

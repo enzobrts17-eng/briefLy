@@ -67,17 +67,29 @@ Analyse la transcription et retourne uniquement un JSON valide avec cette struct
     "action": "Action à réaliser",
     "responsible": "Nom du responsable si identifiable",
     "responsible_employee_id": 1,
+    "responsible_confidence": 85,
     "due_date": "Échéance si identifiable"
   }
 ]
 }
-Pour chaque tâche, attribue responsible_employee_id uniquement si tu es certain du collaborateur concerné.
+Pour chaque tâche, attribue responsible_employee_id uniquement si le score de confiance est supérieur ou égal à 60.
+
+Ajoute toujours responsible_confidence avec un entier de 0 à 100.
 
 Utilise la liste des collaborateurs disponibles, leur nom, leur email et leur poste pour choisir le bon identifiant.
 
-Si plusieurs collaborateurs peuvent correspondre au même prénom, utilise le poste et le contexte de la tâche pour départager.
+Pour déterminer le responsable :
 
-Si tu n'es pas certain, mets responsible_employee_id à null.
+1. Cherche d'abord un prénom, un nom ou un nom complet explicitement cité dans la transcription.
+2. Si plusieurs collaborateurs correspondent au même prénom ou nom, utilise leur poste et le contenu de la tâche pour choisir le plus cohérent.
+3. Si aucun nom n'est cité, attribue la tâche au collaborateur dont le rôle est le plus adapté à l'action.
+4. Si le score de confiance est inférieur à 60, mets responsible à null et responsible_employee_id à null.
+
+Barème de confiance :
+- 90 à 100 : nom complet clairement cité ou prénom/nom sans ambiguïté avec rôle cohérent.
+- 70 à 89 : prénom ou nom cité, départagé par le rôle ou le contexte.
+- 60 à 69 : aucun nom cité, mais rôle très clairement adapté à la tâche.
+- 0 à 59 : doute, ambiguïté ou rôle insuffisamment cohérent.
 
 N'invente jamais d'identifiant.
 
@@ -160,6 +172,7 @@ Chaque collaborateur possède un identifiant unique (id).
 Lorsqu'une action est attribuée à une personne, tu dois retourner :
 - responsible : le nom détecté
 - responsible_employee_id : l'identifiant exact du collaborateur
+- responsible_confidence : score entier de confiance entre 0 et 100
 
 Pour déterminer la bonne personne, utilise dans cet ordre :
 
@@ -168,7 +181,9 @@ Pour déterminer la bonne personne, utilise dans cet ordre :
 3. Prénom + email
 4. Cohérence entre la tâche et le poste
 
-Si plusieurs personnes correspondent et qu'il y a un doute, mets responsible_employee_id à null.
+Si plusieurs personnes correspondent et qu'il y a un doute, mets responsible à null, responsible_employee_id à null et responsible_confidence sous 60.
+
+Si aucun nom n'est cité, tu peux attribuer selon le rôle uniquement si la tâche correspond clairement au poste avec un score supérieur ou égal à 60.
 
 Ne jamais inventer un identifiant.
 
