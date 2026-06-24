@@ -23,7 +23,6 @@ type TaskFromAI = {
   action: string;
   responsible?: string;
   responsible_employee_id?: number | null;
-  responsible_confidence?: number | null;
   due_date?: string;
 };
 
@@ -39,7 +38,6 @@ type Task = {
   action: string;
   responsible: string | null;
   responsible_employee_id?: number | null;
-  responsible_confidence?: number | null;
   due_date: string | null;
   status: string;
 };
@@ -250,19 +248,66 @@ async function deleteEmployee(id: number) {
 
   if (!confirmed) return;
 
+  const detachedTaskPayload = {
+    responsible_employee_id: null,
+    responsible: null,
+  };
+
+  const { error: detachError } = await supabase
+    .from("tasks")
+    .update(detachedTaskPayload)
+    .eq("responsible_employee_id", id);
+
+  if (detachError) {
+    console.error("Erreur Supabase détachement tâches collaborateur :", detachError);
+    alert(
+      detachError.message ||
+        "Impossible de détacher les tâches liées à ce collaborateur."
+    );
+    return;
+  }
+
   const { error } = await supabase
     .from("employees")
     .delete()
     .eq("id", id);
 
   if (error) {
-    console.error(error);
-    alert("Erreur lors de la suppression.");
+    console.error("Erreur Supabase suppression collaborateur :", error);
+    alert(
+      error.message ||
+        "Erreur lors de la suppression du collaborateur. Vérifie les relations Supabase."
+    );
     return;
   }
 
+  const detachLocalTask = (task: Task) =>
+    task.responsible_employee_id === id
+      ? {
+          ...task,
+          responsible_employee_id: null,
+          responsible: null,
+        }
+      : task;
+
+  setEmployees((currentEmployees) =>
+    currentEmployees.filter((employee) => employee.id !== id)
+  );
+  setTasks((currentTasks) => currentTasks.map(detachLocalTask));
+  setHistoryTasks((currentTasks) => currentTasks.map(detachLocalTask));
+  setSelectedEmployees((currentSelectedEmployees) =>
+    currentSelectedEmployees.filter((employeeId) => employeeId !== id)
+  );
+  setPendingParticipantIds((currentPendingParticipantIds) =>
+    currentPendingParticipantIds.filter((employeeId) => employeeId !== id)
+  );
+  setEmailRecipients((currentEmailRecipients) =>
+    currentEmailRecipients.filter((employeeId) => employeeId !== id)
+  );
+  if (selectedEmployeeProfile?.id === id) {
+    setSelectedEmployeeProfile(null);
+  }
   closeAllMenus();
-  await loadEmployees();
 }
   async function deleteMeeting(id: number) {
     const confirmed = window.confirm(
@@ -377,15 +422,12 @@ async function deleteEmployee(id: number) {
     const aiEmployee = task.responsible_employee_id
       ? employees.find((employee) => employee.id === task.responsible_employee_id)
       : null;
-    const aiConfidence = Math.max(
-      0,
-      Math.min(100, task.responsible_confidence ?? 0)
-    );
+    const aiConfidence = aiEmployee ? scoreEmployeeForTask(task, aiEmployee) : 0;
 
     if (aiEmployee && aiConfidence >= 60) {
       return {
         employee: aiEmployee,
-        confidence: Math.max(aiConfidence, scoreEmployeeForTask(task, aiEmployee)),
+        confidence: aiConfidence,
       };
     }
 
@@ -400,32 +442,11 @@ async function deleteEmployee(id: number) {
     if (!bestCandidate || bestCandidate.confidence < 60) {
       return {
         employee: null,
-        confidence: bestCandidate?.confidence || aiConfidence,
+        confidence: bestCandidate?.confidence || 0,
       };
     }
 
     return bestCandidate;
-  }
-
-  function isMissingResponsibleConfidenceColumnError(error: unknown) {
-    if (!error || typeof error !== "object") {
-      return false;
-    }
-
-    const errorText = Object.values(error)
-      .filter((value) => typeof value === "string")
-      .join(" ")
-      .toLowerCase();
-
-    return errorText.includes("responsible_confidence");
-  }
-
-  function removeResponsibleConfidence<
-    T extends { responsible_confidence?: number | null },
-  >(row: T) {
-    const rowWithoutConfidence = { ...row };
-    delete rowWithoutConfidence.responsible_confidence;
-    return rowWithoutConfidence;
   }
 
   function normalizeTaskDueDate(dueDate: string | null | undefined) {
@@ -453,7 +474,6 @@ async function deleteEmployee(id: number) {
     action: task.action,
     responsible: assignment.employee?.name || null,
     responsible_employee_id: assignment.employee?.id || null,
-    responsible_confidence: assignment.confidence,
     due_date: normalizeTaskDueDate(task.due_date),
     status: "À faire",
   };
@@ -461,21 +481,6 @@ async function deleteEmployee(id: number) {
   const { error } = await supabase.from("tasks").insert(tasksToInsert);
 
   if (error) {
-    if (isMissingResponsibleConfidenceColumnError(error)) {
-      const tasksWithoutConfidence = tasksToInsert.map((task) =>
-        removeResponsibleConfidence(task)
-      );
-      const { error: fallbackError } = await supabase
-        .from("tasks")
-        .insert(tasksWithoutConfidence);
-
-      if (fallbackError) {
-        console.error(fallbackError);
-      }
-
-      return;
-    }
-
     console.error(error);
   }
 }
@@ -993,7 +998,6 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
   const updatePayload = {
     responsible: employee.name,
     responsible_employee_id: employee.id,
-    responsible_confidence: 100,
   };
 
   const { error } = await supabase
@@ -1002,35 +1006,6 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
     .eq("id", task.id);
 
   if (error) {
-    if (isMissingResponsibleConfidenceColumnError(error)) {
-      const { error: fallbackError } = await supabase
-        .from("tasks")
-        .update(removeResponsibleConfidence(updatePayload))
-        .eq("id", task.id);
-
-      if (!fallbackError) {
-        setTasks((currentTasks) =>
-          currentTasks.map((currentTask) =>
-            currentTask.id === task.id
-              ? {
-                  ...currentTask,
-                  responsible: employee.name,
-                  responsible_employee_id: employee.id,
-                  responsible_confidence: 100,
-                }
-              : currentTask
-          )
-        );
-
-        closeAllMenus();
-        return;
-      }
-
-      console.error(fallbackError);
-      alert("Erreur lors de la modification du responsable.");
-      return;
-    }
-
     console.error(error);
     alert("Erreur lors de la modification du responsable.");
     return;
@@ -1043,7 +1018,6 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
             ...currentTask,
             responsible: employee.name,
             responsible_employee_id: employee.id,
-            responsible_confidence: 100,
           }
         : currentTask
     )
@@ -1078,7 +1052,6 @@ async function createResponsibleAndAssignTask(task: Task) {
   const updatePayload = {
     responsible: newEmployee.name,
     responsible_employee_id: newEmployee.id,
-    responsible_confidence: 100,
   };
 
   const { error: updateError } = await supabase
@@ -1087,32 +1060,14 @@ async function createResponsibleAndAssignTask(task: Task) {
     .eq("id", task.id);
 
   if (updateError) {
-    if (isMissingResponsibleConfidenceColumnError(updateError)) {
-      const { error: fallbackError } = await supabase
-        .from("tasks")
-        .update(removeResponsibleConfidence(updatePayload))
-        .eq("id", task.id);
-
-      if (fallbackError) {
-        console.error(fallbackError);
-        alert("Le collaborateur a été créé, mais la tâche n'a pas pu être assignée.");
-        setEmployees((currentEmployees) =>
-          [...currentEmployees, newEmployee].sort((a, b) =>
-            a.name.localeCompare(b.name)
-          )
-        );
-        return;
-      }
-    } else {
-      console.error(updateError);
-      alert("Le collaborateur a été créé, mais la tâche n'a pas pu être assignée.");
-      setEmployees((currentEmployees) =>
-        [...currentEmployees, newEmployee].sort((a, b) =>
-          a.name.localeCompare(b.name)
-        )
-      );
-      return;
-    }
+    console.error(updateError);
+    alert("Le collaborateur a été créé, mais la tâche n'a pas pu être assignée.");
+    setEmployees((currentEmployees) =>
+      [...currentEmployees, newEmployee].sort((a, b) =>
+        a.name.localeCompare(b.name)
+      )
+    );
+    return;
   }
 
   setEmployees((currentEmployees) =>
@@ -1127,7 +1082,6 @@ async function createResponsibleAndAssignTask(task: Task) {
             ...currentTask,
             responsible: newEmployee.name,
             responsible_employee_id: newEmployee.id,
-            responsible_confidence: 100,
           }
         : currentTask
     )
