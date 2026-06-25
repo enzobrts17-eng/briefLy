@@ -10,6 +10,15 @@ type Meeting = {
   file_name: string;
   created_at: string;
   report: string;
+  folder_id?: number | null;
+};
+
+type MeetingFolder = {
+  id: number;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  created_at: string;
 };
 
 type Employee = {
@@ -51,8 +60,20 @@ type MeetingParticipantRow = {
   employees: Employee | Employee[] | null;
 };
 
+type MeetingParticipantSearchRow = {
+  meeting_id: number;
+  employees: Employee | Employee[] | null;
+};
+
 type AppSection = "dashboard" | "new" | "report" | "history" | "collaborators";
 type DashboardPeriod = "week" | "month" | "year" | "all";
+type DashboardSelection =
+  | "meetings"
+  | "todo"
+  | "progress"
+  | "done"
+  | "overdue"
+  | null;
 
 const GENERATING_REPORT_MESSAGE = "Génération du compte rendu en cours...";
 
@@ -65,24 +86,55 @@ export default function Home() {
   const [currentMeetingId, setCurrentMeetingId] = useState<number | null>(null);
   const [currentParticipants, setCurrentParticipants] = useState<Employee[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetingFolders, setMeetingFolders] = useState<MeetingFolder[]>([]);
+  const [folderStatus, setFolderStatus] = useState("");
+  const [expandedFolderIds, setExpandedFolderIds] = useState<number[]>([]);
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [folderModalMode, setFolderModalMode] = useState<
+    "create" | "rename" | "add" | "remove"
+  >("create");
+  const [activeFolder, setActiveFolder] = useState<MeetingFolder | null>(null);
+  const [folderName, setFolderName] = useState("");
+  const [selectedFolderMeetingIds, setSelectedFolderMeetingIds] = useState<
+    number[]
+  >([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [meetingParticipantsByMeetingId, setMeetingParticipantsByMeetingId] =
+    useState<Record<number, Employee[]>>({});
   const [selectedEmployees, setSelectedEmployees] = useState<number[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState("");
   const [participantSearch, setParticipantSearch] = useState("");
   const [meetingSearch, setMeetingSearch] = useState("");
-  const [meetingFilter, setMeetingFilter] = useState<
-  "all" | "today" | "week" | "month"
->("all");
+  const [dashboardSearch, setDashboardSearch] = useState("");
   const [showTrash, setShowTrash] = useState(false);
   const [deletedMeetings, setDeletedMeetings] = useState<Meeting[]>([]);
   const [isEditing, setIsEditing] = useState(false);
 const [emailStatus, setEmailStatus] = useState("");
 const [showEmailModal, setShowEmailModal] = useState(false);
+const [showSendReportModal, setShowSendReportModal] = useState(false);
+const [sendReportContext, setSendReportContext] = useState<
+  "current" | "history"
+>("current");
+const [isSendParticipantsOpen, setIsSendParticipantsOpen] = useState(false);
+const [isSendOthersOpen, setIsSendOthersOpen] = useState(false);
+const [copiedNotice, setCopiedNotice] = useState("");
+const [openReportSections, setOpenReportSections] = useState<
+  Record<string, boolean>
+>({});
+const [generationStepIndex, setGenerationStepIndex] = useState(0);
+const [pendingCloseTarget, setPendingCloseTarget] = useState<
+  "current" | "history" | null
+>(null);
 const [showParticipantsModal, setShowParticipantsModal] = useState(false);
+const [showInviteParticipantsModal, setShowInviteParticipantsModal] =
+  useState(false);
 const [showBulkTasksModal, setShowBulkTasksModal] = useState(false);
 const [showReminderModal, setShowReminderModal] = useState(false);
 const [emailRecipients, setEmailRecipients] = useState<number[]>([]);
 const [pendingParticipantIds, setPendingParticipantIds] = useState<number[]>([]);
+const [pendingInviteEmployeeIds, setPendingInviteEmployeeIds] = useState<
+  number[]
+>([]);
 const [selectedBulkTaskIds, setSelectedBulkTaskIds] = useState<number[]>([]);
 const [bulkTaskSource, setBulkTaskSource] = useState<Task[]>([]);
 const [reminderTaskSource, setReminderTaskSource] = useState<Task[]>([]);
@@ -92,11 +144,26 @@ const [selectedReminderTaskIds, setSelectedReminderTaskIds] = useState<number[]>
 const [showOtherReminderTasks, setShowOtherReminderTasks] = useState(false);
 const [reminderStatus, setReminderStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [activeLiveMeetingId, setActiveLiveMeetingId] = useState<string | null>(
+    null
+  );
+  const [invitedLiveParticipantIds, setInvitedLiveParticipantIds] = useState<
+    number[]
+  >([]);
+  const [connectedLiveParticipantIds, setConnectedLiveParticipantIds] = useState<
+    number[]
+  >([]);
+  const [liveMeetingStartedAt, setLiveMeetingStartedAt] = useState<Date | null>(
+    null
+  );
+  const [liveMeetingElapsedSeconds, setLiveMeetingElapsedSeconds] = useState(0);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [dashboardTasks, setDashboardTasks] = useState<Task[]>([]);
   const [dashboardPeriod, setDashboardPeriod] =
-    useState<DashboardPeriod>("month");
-  const [activeSection, setActiveSection] = useState<AppSection>("new");
+    useState<DashboardPeriod>("week");
+  const [dashboardSelection, setDashboardSelection] =
+    useState<DashboardSelection>(null);
+  const [activeSection, setActiveSection] = useState<AppSection>("dashboard");
   const [openedHistoryMeetingId, setOpenedHistoryMeetingId] = useState<
     number | null
   >(null);
@@ -107,11 +174,25 @@ const [reminderStatus, setReminderStatus] = useState("");
   const [historyTasks, setHistoryTasks] = useState<Task[]>([]);
   const [isEditingHistory, setIsEditingHistory] = useState(false);
   const [editedHistoryReport, setEditedHistoryReport] = useState("");
+  const [editedTitle, setEditedTitle] = useState("");
+  const [editedHistoryTitle, setEditedHistoryTitle] = useState("");
+  const [isCurrentParticipantsOpen, setIsCurrentParticipantsOpen] =
+    useState(false);
+  const [isCurrentTasksOpen, setIsCurrentTasksOpen] = useState(false);
+  const [isHistoryParticipantsOpen, setIsHistoryParticipantsOpen] =
+    useState(false);
+  const [isHistoryTasksOpen, setIsHistoryTasksOpen] = useState(false);
+  const [historyScrollBeforeOpen, setHistoryScrollBeforeOpen] = useState(0);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const employeeNameInputRef = useRef<HTMLInputElement | null>(null);
+  const dashboardSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const meetingSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const employeeSearchInputRef = useRef<HTMLInputElement | null>(null);
 const [openTaskMenuId, setOpenTaskMenuId] = useState<number | null>(null);
 const [openMeetingMenuId, setOpenMeetingMenuId] = useState<number | null>(null);
+const [openFolderMenuId, setOpenFolderMenuId] = useState<number | null>(null);
 const [openEmployeeMenuId, setOpenEmployeeMenuId] = useState<number | null>(null);
 const [openTrashMeetingMenuId, setOpenTrashMeetingMenuId] = useState<
   number | null
@@ -119,7 +200,7 @@ const [openTrashMeetingMenuId, setOpenTrashMeetingMenuId] = useState<
 const [selectedEmployeeProfile, setSelectedEmployeeProfile] =
   useState<Employee | null>(null);
 const [selectedResponsible, setSelectedResponsible] = useState("Tous");
-const [taskStatusFilter, setTaskStatusFilter] = useState<
+const [taskStatusFilter] = useState<
   "all" | "done" | "progress" | "todo"
 >("all");
 const [currentMeetingDate, setCurrentMeetingDate] = useState("");
@@ -141,9 +222,10 @@ const [newResponsibleForm, setNewResponsibleForm] = useState({
 const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
 const [editedTaskAction, setEditedTaskAction] = useState("");
   const closeAllMenus = useCallback(() => {
-    setOpenTaskMenuId(null);
-    setOpenMeetingMenuId(null);
-    setOpenEmployeeMenuId(null);
+	    setOpenTaskMenuId(null);
+	    setOpenMeetingMenuId(null);
+	    setOpenFolderMenuId(null);
+	    setOpenEmployeeMenuId(null);
     setOpenTrashMeetingMenuId(null);
     setNewResponsibleTaskId(null);
     setEditingTaskId(null);
@@ -153,9 +235,149 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   useEffect(() => {
     loadMeetings();
     loadDeletedMeetings();
-    loadEmployees();
-    loadDashboardTasks();
-  }, []);
+	    loadMeetingFolders();
+	    loadEmployees();
+	    loadMeetingParticipantIndex();
+	    loadDashboardTasks();
+	  }, []);
+
+  useEffect(() => {
+    if (!isRecording || !liveMeetingStartedAt) {
+      return;
+    }
+
+    const updateElapsedTime = () => {
+      setLiveMeetingElapsedSeconds(
+        Math.floor((Date.now() - liveMeetingStartedAt.getTime()) / 1000)
+      );
+    };
+
+    updateElapsedTime();
+    const intervalId = window.setInterval(updateElapsedTime, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isRecording, liveMeetingStartedAt]);
+
+  useEffect(() => {
+    if (!showEmployeeModal) {
+      return;
+    }
+
+    window.setTimeout(() => employeeNameInputRef.current?.focus(), 0);
+  }, [showEmployeeModal]);
+
+  useEffect(() => {
+    if (message !== GENERATING_REPORT_MESSAGE) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setGenerationStepIndex((currentStep) => Math.min(currentStep + 1, 3));
+    }, 1300);
+
+    return () => window.clearInterval(intervalId);
+  }, [message]);
+
+  useEffect(() => {
+    function closeTopMostPopup() {
+      if (pendingCloseTarget) {
+        setPendingCloseTarget(null);
+        return true;
+      }
+      if (showSendReportModal) {
+        setShowSendReportModal(false);
+        return true;
+      }
+      if (showParticipantsModal) {
+        setShowParticipantsModal(false);
+        return true;
+      }
+      if (showInviteParticipantsModal) {
+        setShowInviteParticipantsModal(false);
+        return true;
+      }
+      if (showBulkTasksModal) {
+        setShowBulkTasksModal(false);
+        return true;
+      }
+      if (showReminderModal) {
+        closeReminderModal();
+        return true;
+      }
+      if (showFolderModal) {
+        closeFolderModal();
+        return true;
+      }
+      if (showEmailModal) {
+        setShowEmailModal(false);
+        return true;
+      }
+      if (showEmployeeModal) {
+        setShowEmployeeModal(false);
+        return true;
+      }
+      if (showTrash) {
+        setShowTrash(false);
+        return true;
+      }
+
+      return false;
+    }
+
+    function handleKeyboardShortcuts(event: KeyboardEvent) {
+      const target = event.target;
+      const isTextInput =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+
+      if (event.key === "Escape" && closeTopMostPopup()) {
+        event.preventDefault();
+        return;
+      }
+
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+
+      if (key === "f") {
+        event.preventDefault();
+        const searchInput =
+          activeSection === "history"
+            ? meetingSearchInputRef.current
+            : activeSection === "collaborators"
+              ? employeeSearchInputRef.current
+              : dashboardSearchInputRef.current;
+        searchInput?.focus();
+        return;
+      }
+
+      if (key === "n" && !isTextInput) {
+        event.preventDefault();
+        setActiveSection("new");
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyboardShortcuts);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyboardShortcuts);
+    };
+  }, [
+    activeSection,
+    pendingCloseTarget,
+    showBulkTasksModal,
+    showEmailModal,
+    showEmployeeModal,
+    showFolderModal,
+    showInviteParticipantsModal,
+    showParticipantsModal,
+    showReminderModal,
+    showSendReportModal,
+    showTrash,
+  ]);
 
   useEffect(() => {
     function handleDocumentClick(event: MouseEvent) {
@@ -210,6 +432,195 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     setDeletedMeetings(data || []);
   }
 
+	  async function loadMeetingFolders() {
+	    const { data, error } = await supabase
+	      .from("meeting_folders")
+	      .select("*")
+	      .order("created_at", { ascending: false });
+	
+	    if (error) {
+	      console.error("Erreur Supabase chargement dossiers:", error);
+	      setMeetingFolders([]);
+	      return;
+	    }
+		
+		    setMeetingFolders((data || []) as MeetingFolder[]);
+		  }
+	
+  function openCreateFolderModal() {
+    setFolderModalMode("create");
+    setActiveFolder(null);
+    setFolderName("");
+    setSelectedFolderMeetingIds([]);
+    setFolderStatus("");
+    setShowFolderModal(true);
+  }
+
+  function openRenameFolderModal(folder: MeetingFolder) {
+    setFolderModalMode("rename");
+    setActiveFolder(folder);
+    setFolderName(folder.name);
+    setSelectedFolderMeetingIds([]);
+    setFolderStatus("");
+    setShowFolderModal(true);
+  }
+
+  function openAddMeetingsToFolderModal(folder: MeetingFolder) {
+    setFolderModalMode("add");
+    setActiveFolder(folder);
+    setFolderName(folder.name);
+    setSelectedFolderMeetingIds([]);
+    setFolderStatus("");
+    setShowFolderModal(true);
+  }
+
+  function openRemoveMeetingsFromFolderModal(folder: MeetingFolder) {
+    setFolderModalMode("remove");
+    setActiveFolder(folder);
+    setFolderName(folder.name);
+    setSelectedFolderMeetingIds([]);
+    setFolderStatus("");
+    setShowFolderModal(true);
+  }
+
+  function closeFolderModal() {
+    setShowFolderModal(false);
+    setActiveFolder(null);
+    setFolderName("");
+    setSelectedFolderMeetingIds([]);
+    setFolderStatus("");
+  }
+
+  async function updateMeetingFolder(meetingIds: number[], folderId: number | null) {
+    if (meetingIds.length === 0) return true;
+
+	    const { error } = await supabase
+	      .from("meetings")
+	      .update({ folder_id: folderId })
+	      .in("id", meetingIds);
+	
+	    if (error) {
+	      console.error("Erreur Supabase classement réunions:", error);
+	      setFolderStatus("Impossible de mettre à jour le dossier. Consulte la console pour le détail.");
+	      return false;
+	    }
+
+    setMeetings((currentMeetings) =>
+      currentMeetings.map((meeting) =>
+	        meetingIds.includes(meeting.id)
+	          ? { ...meeting, folder_id: folderId }
+	          : meeting
+	      )
+    );
+    return true;
+  }
+
+  async function submitFolderModal() {
+    const trimmedName = folderName.trim();
+
+    if ((folderModalMode === "create" || folderModalMode === "rename") && !trimmedName) {
+      setFolderStatus("Indique un nom de dossier.");
+      return;
+    }
+
+    if (folderModalMode === "create") {
+      const { data, error } = await supabase
+        .from("meeting_folders")
+        .insert({
+          name: trimmedName,
+          description: null,
+          color: null,
+        })
+        .select("*")
+        .single();
+
+      if (error || !data) {
+        console.error("Erreur Supabase création dossier:", error);
+        setFolderStatus("Impossible de créer le dossier. Consulte la console pour le détail.");
+        return;
+      }
+
+      const createdFolder = data as MeetingFolder;
+      setMeetingFolders((currentFolders) => [createdFolder, ...currentFolders]);
+      setExpandedFolderIds((currentIds) => [
+        ...new Set([...currentIds, createdFolder.id]),
+      ]);
+
+      const updated = await updateMeetingFolder(
+        selectedFolderMeetingIds,
+        createdFolder.id
+      );
+
+      if (updated) closeFolderModal();
+      return;
+    }
+
+    if (!activeFolder) return;
+
+    if (folderModalMode === "rename") {
+      const { error } = await supabase
+        .from("meeting_folders")
+        .update({ name: trimmedName })
+        .eq("id", activeFolder.id);
+
+      if (error) {
+        console.error("Erreur Supabase renommage dossier:", error);
+        setFolderStatus("Impossible de renommer le dossier. Consulte la console pour le détail.");
+        return;
+      }
+
+      setMeetingFolders((currentFolders) =>
+        currentFolders.map((folder) =>
+          folder.id === activeFolder.id ? { ...folder, name: trimmedName } : folder
+        )
+      );
+      closeFolderModal();
+      return;
+    }
+
+    if (folderModalMode === "add") {
+      const updated = await updateMeetingFolder(
+        selectedFolderMeetingIds,
+        activeFolder.id
+      );
+      if (updated) closeFolderModal();
+      return;
+    }
+
+    if (folderModalMode === "remove") {
+      const updated = await updateMeetingFolder(selectedFolderMeetingIds, null);
+      if (updated) closeFolderModal();
+    }
+  }
+
+  async function deleteFolder(folder: MeetingFolder) {
+    const detached = await updateMeetingFolder(
+      meetings
+        .filter((meeting) => meeting.folder_id === folder.id)
+        .map((meeting) => meeting.id),
+      null
+    );
+
+    if (!detached) return;
+
+    const { error } = await supabase.from("meeting_folders").delete().eq("id", folder.id);
+
+    if (error) {
+      console.error("Erreur Supabase suppression dossier:", error);
+      setFolderStatus("Impossible de supprimer le dossier. Consulte la console pour le détail.");
+      await loadMeetings();
+      return;
+    }
+
+    setMeetingFolders((currentFolders) =>
+      currentFolders.filter((currentFolder) => currentFolder.id !== folder.id)
+    );
+    setExpandedFolderIds((currentIds) =>
+      currentIds.filter((folderId) => folderId !== folder.id)
+    );
+    closeAllMenus();
+  }
+
   async function loadEmployees() {
     const { data, error } = await supabase
       .from("employees")
@@ -224,6 +635,36 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     setEmployees(data || []);
   }
 
+  async function loadMeetingParticipantIndex() {
+    const { data, error } = await supabase
+      .from("meeting_participants")
+      .select("meeting_id, employees(*)");
+
+    if (error) {
+      console.warn("Impossible de charger l'index participants:", error);
+      setMeetingParticipantsByMeetingId({});
+      return;
+    }
+
+    const rows = (data || []) as MeetingParticipantSearchRow[];
+    const participantsByMeetingId: Record<number, Employee[]> = {};
+
+    rows.forEach((row) => {
+      const participantList = Array.isArray(row.employees)
+        ? row.employees
+        : row.employees
+          ? [row.employees]
+          : [];
+
+      participantsByMeetingId[row.meeting_id] = [
+        ...(participantsByMeetingId[row.meeting_id] || []),
+        ...participantList,
+      ];
+    });
+
+    setMeetingParticipantsByMeetingId(participantsByMeetingId);
+  }
+
   async function loadDashboardTasks() {
     const { data, error } = await supabase
       .from("tasks")
@@ -236,6 +677,58 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     }
 
     setDashboardTasks((data || []) as Task[]);
+  }
+
+  function startLiveMeetingSession() {
+    const startedAt = new Date();
+
+    setActiveLiveMeetingId(`live-${Date.now()}`);
+    setLiveMeetingStartedAt(startedAt);
+    setLiveMeetingElapsedSeconds(0);
+    setInvitedLiveParticipantIds([]);
+    setConnectedLiveParticipantIds([]);
+    setPendingInviteEmployeeIds([]);
+  }
+
+  function endLiveMeetingSession() {
+    setActiveLiveMeetingId(null);
+    setLiveMeetingStartedAt(null);
+    setLiveMeetingElapsedSeconds(0);
+    setInvitedLiveParticipantIds([]);
+    setConnectedLiveParticipantIds([]);
+    setPendingInviteEmployeeIds([]);
+    setShowInviteParticipantsModal(false);
+  }
+
+  function inviteLiveParticipants(employeeIds: number[]) {
+    setInvitedLiveParticipantIds((currentIds) => [
+      ...new Set([
+        ...currentIds,
+        ...employeeIds.filter(
+          (employeeId) => !connectedLiveParticipantIds.includes(employeeId)
+        ),
+      ]),
+    ]);
+    setPendingInviteEmployeeIds([]);
+    setShowInviteParticipantsModal(false);
+  }
+
+  function markLiveParticipantAsJoined(employeeId: number) {
+    setConnectedLiveParticipantIds((currentIds) => [
+      ...new Set([...currentIds, employeeId]),
+    ]);
+    setInvitedLiveParticipantIds((currentIds) =>
+      currentIds.filter((currentId) => currentId !== employeeId)
+    );
+    setPendingInviteEmployeeIds((currentIds) =>
+      currentIds.filter((currentId) => currentId !== employeeId)
+    );
+  }
+
+  function openManualParticipantsFallback() {
+    setPendingParticipantIds(connectedLiveParticipantIds);
+    setParticipantSearch("");
+    setShowParticipantsModal(true);
   }
 async function saveEmployeeForm() {
   if (!employeeForm.name.trim()) {
@@ -258,6 +751,9 @@ async function saveEmployeeForm() {
       alert("Erreur lors de la modification.");
       return;
     }
+
+    setShowEmployeeModal(false);
+    setEditingEmployee(null);
   } else {
     const { error } = await supabase.from("employees").insert({
       name: employeeForm.name,
@@ -270,11 +766,11 @@ async function saveEmployeeForm() {
       alert("Erreur lors de l'ajout.");
       return;
     }
+
+    setEmployeeForm({ name: "", role: "", email: "" });
+    setShowEmployeeModal(false);
   }
 
-  setShowEmployeeModal(false);
-  setEditingEmployee(null);
-  setEmployeeForm({ name: "", role: "", email: "" });
   await loadEmployees();
 }
 
@@ -538,19 +1034,51 @@ async function deleteEmployee(id: number) {
   async function saveMeeting(
   title: string,
   report: string,
-  fileName: string,
-  tasks: TaskFromAI[] = [],
-  participantIds: number[] = selectedEmployees
+	  fileName: string,
+	  tasks: TaskFromAI[] = [],
+	  participantIds: number[] = selectedEmployees,
+	  folderId: number | null = null
 ) {
-    const { data, error } = await supabase
+    const meetingPayload: {
+      title: string;
+      report: string;
+      file_name: string;
+      folder_id?: number | null;
+    } = {
+      title,
+      report,
+      file_name: fileName,
+    };
+
+    if (folderId) {
+      meetingPayload.folder_id = folderId;
+    }
+
+    let { data, error } = await supabase
       .from("meetings")
-      .insert({
+      .insert(meetingPayload)
+      .select()
+      .single();
+
+    if (error && "folder_id" in meetingPayload) {
+      console.warn(
+        "La colonne meetings.folder_id n'est pas disponible, sauvegarde sans dossier:",
+        error
+      );
+      const fallbackPayload = {
         title,
         report,
         file_name: fileName,
-      })
-      .select()
-      .single();
+      };
+      const fallbackResponse = await supabase
+        .from("meetings")
+        .insert(fallbackPayload)
+        .select()
+        .single();
+
+      data = fallbackResponse.data;
+      error = fallbackResponse.error;
+    }
 
     if (error) {
       console.error(error);
@@ -586,19 +1114,20 @@ if (data) {
       }
     }
 
-	   
-	    await loadMeetings();
-	    await loadDashboardTasks();
-	    return data.id;
-	  }
+		   
+		    await loadMeetings();
+		    await loadMeetingParticipantIndex();
+		    await loadDashboardTasks();
+		    return data.id;
+		  }
 
-  async function startRecording() {
-    try {
-      setMessage("");
-      setCurrentTitle("");
-      audioChunksRef.current = [];
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+	  async function startRecording() {
+	    try {
+	      setMessage("");
+	      setCurrentTitle("");
+	      audioChunksRef.current = [];
+	
+	      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -626,6 +1155,7 @@ if (data) {
 
       mediaRecorder.start();
       setIsRecording(true);
+      startLiveMeetingSession();
     } catch (error) {
       console.error(error);
       setMessage("Impossible d'accéder au micro.");
@@ -634,6 +1164,12 @@ if (data) {
 
   function stopRecording() {
     if (mediaRecorderRef.current) {
+      if (liveMeetingStartedAt) {
+        setLiveMeetingElapsedSeconds(
+          Math.floor((Date.now() - liveMeetingStartedAt.getTime()) / 1000)
+        );
+      }
+
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current.stream.getTracks().forEach((track) => {
         track.stop();
@@ -652,6 +1188,7 @@ if (data) {
     try {
       setCurrentTitle("");
       setReportError("");
+      setGenerationStepIndex(0);
       setMessage(GENERATING_REPORT_MESSAGE);
 
       const selectedParticipants = employees.filter((employee) =>
@@ -717,6 +1254,9 @@ setCurrentTitle(data.title);
 setMessage(data.report);
 setCurrentMeetingDate(new Date().toLocaleString("fr-FR"));
 setCurrentParticipants(selectedParticipants);
+setIsCurrentParticipantsOpen(false);
+setIsCurrentTasksOpen(false);
+endLiveMeetingSession();
 setActiveSection("report");
       
     } catch (error) {
@@ -725,80 +1265,195 @@ setActiveSection("report");
       setMessage("");
     }
   }
-async function sendMeetingEmail(
-  title: string,
-  report: string,
-  employeeIds: number[]
-) {
-  const emails = employees
-    .filter((employee) => employeeIds.includes(employee.id))
-    .map((employee) => employee.email);
+function getBrieflyReportUrl(meetingId: number | null | undefined) {
+  const baseUrl =
+    process.env.NEXT_PUBLIC_BRIEFLY_REPORT_URL ||
+    (typeof window !== "undefined" ? window.location.origin : "https://briefly.app");
 
-  if (emails.length === 0) return;
+  const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
+  return meetingId ? `${normalizedBaseUrl}?meeting=${meetingId}` : normalizedBaseUrl;
+}
 
+function getEmailSummary(report: string) {
+  const cleanReport = report
+    .replace(/^#+\s+/gm, "")
+    .replace(/\*\*/g, "")
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .find(Boolean);
 
-  try {
-    await fetch("/api/send-email", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        emails,
-        title,
-        report,
-      }),
-    });
-  } catch (error) {
-    console.error(error);
+  if (!cleanReport) {
+    return "Le compte rendu de la réunion est disponible dans Briefly.";
   }
-}
-async function sendEmailToParticipants() {
-const selectedRecipients = employees.filter((employee) =>
-  emailRecipients.includes(employee.id)
-);
 
-const emails = selectedRecipients
-  .map((employee) => employee.email)
-  .filter((email) => email);
-
-if (emails.length === 0) {
-  setEmailStatus("Aucun destinataire sélectionné.");
-  return;
+  return cleanReport.length > 360
+    ? `${cleanReport.slice(0, 360).trim()}...`
+    : cleanReport;
 }
 
-  if (!message || message === GENERATING_REPORT_MESSAGE) {
+function getOpenTasksForEmployee(sourceTasks: Task[], employee: Employee) {
+  const employeeName = employee.name.toLowerCase().trim();
+
+  return sourceTasks.filter((task) => {
+    if (normalizeTaskStatus(task.status) === "Fait") {
+      return false;
+    }
+
+    if (task.responsible_employee_id) {
+      return task.responsible_employee_id === employee.id;
+    }
+
+    const responsibleName = task.responsible?.toLowerCase().trim();
+    if (!responsibleName) {
+      return false;
+    }
+
+    return (
+      responsibleName === employeeName ||
+      responsibleName.includes(employeeName) ||
+      employeeName.includes(responsibleName)
+    );
+  });
+}
+
+async function sendMeetingPackage({
+  title,
+  report,
+  meetingDate,
+  participants,
+  sourceTasks,
+  meetingId,
+}: {
+  title: string;
+  report: string;
+  meetingDate: string;
+  participants: Employee[];
+  sourceTasks: Task[];
+  meetingId: number | null;
+}) {
+  if (!report || report === GENERATING_REPORT_MESSAGE) {
     setEmailStatus("Aucun compte rendu à envoyer.");
+    return;
+  }
+
+  const uniqueParticipants = [
+    ...new Map(participants.map((participant) => [participant.id, participant])).values(),
+  ];
+
+  if (uniqueParticipants.length === 0) {
+    setEmailStatus("Aucun participant renseigné pour cet envoi.");
+    return;
+  }
+
+  const participantsWithEmail = uniqueParticipants.filter((participant) =>
+    participant.email?.trim()
+  );
+  const missingEmailCount = uniqueParticipants.length - participantsWithEmail.length;
+
+  if (participantsWithEmail.length === 0) {
+    setEmailStatus("Aucun participant ne possède d'email renseigné.");
     return;
   }
 
   try {
     setEmailStatus("Envoi en cours...");
 
-    const response = await fetch("/api/send-email", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        emails,
-        title: currentTitle || "Compte rendu de réunion",
-        report: message,
-      }),
-    });
+    let includedTaskCount = 0;
 
-    const data = await response.json();
+    for (const participant of participantsWithEmail) {
+      const participantTasks = getOpenTasksForEmployee(sourceTasks, participant);
+      includedTaskCount += participantTasks.length;
 
-    if (!response.ok) {
-      setEmailStatus(data.error || "Erreur pendant l'envoi.");
-      return;
+      const response = await fetch("/api/send-email", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          emails: [participant.email],
+          title,
+          meetingDate,
+          participants: uniqueParticipants.map((employee) => employee.name),
+          summary: getEmailSummary(report),
+          report,
+          tasks: participantTasks.map((task) => ({
+            action: task.action,
+            due_date: task.due_date,
+            status: normalizeTaskStatus(task.status),
+          })),
+          ctaUrl: getBrieflyReportUrl(meetingId),
+          subject: `Compte rendu - ${title}`,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "Erreur pendant l'envoi.");
+      }
     }
 
-    setEmailStatus("Compte rendu envoyé aux participants.");
+    const missingMessage =
+      missingEmailCount > 0
+        ? ` ${missingEmailCount} participant(s) ignoré(s) sans email.`
+        : "";
+
+    setEmailStatus(
+      `${participantsWithEmail.length} email(s) envoyé(s). ${includedTaskCount} tâche(s) intégrée(s).${missingMessage}`
+    );
   } catch (error) {
     console.error(error);
     setEmailStatus("Erreur pendant l'envoi de l'email.");
   }
+}
+
+function openSendReportModal(context: "current" | "history") {
+  const participants =
+    context === "current" ? currentParticipants : historyParticipants;
+
+  setSendReportContext(context);
+  setEmailRecipients(participants.map((participant) => participant.id));
+  setIsSendParticipantsOpen(false);
+  setIsSendOthersOpen(false);
+  setShowSendReportModal(true);
+}
+
+async function confirmSendReportModal() {
+  const selectedRecipients = employees.filter((employee) =>
+    emailRecipients.includes(employee.id)
+  );
+
+  await sendMeetingPackage({
+    title:
+      sendReportContext === "current"
+        ? currentTitle || "Compte rendu de réunion"
+        : historyTitle || "Compte rendu de réunion",
+    report: sendReportContext === "current" ? message : historyMessage,
+    meetingDate:
+      sendReportContext === "current" ? currentMeetingDate : historyDate,
+    participants: selectedRecipients,
+    sourceTasks: sendReportContext === "current" ? tasks : historyTasks,
+    meetingId:
+      sendReportContext === "current" ? currentMeetingId : openedHistoryMeetingId,
+  });
+
+  setShowSendReportModal(false);
+}
+
+async function sendEmailToParticipants() {
+const selectedRecipients = employees.filter((employee) =>
+  emailRecipients.includes(employee.id)
+);
+
+await sendMeetingPackage({
+  title: currentTitle || "Compte rendu de réunion",
+  report: message,
+  meetingDate: currentMeetingDate,
+  participants: selectedRecipients,
+  sourceTasks: tasks,
+  meetingId: currentMeetingId,
+});
+
+setShowEmailModal(false);
 }
 async function saveEditedReport() {
   if (!currentMeetingId) {
@@ -806,9 +1461,12 @@ async function saveEditedReport() {
     return;
   }
 
+  const nextTitle = editedTitle.trim() || currentTitle || "Compte rendu de réunion";
+
   const { error } = await supabase
     .from("meetings")
     .update({
+      title: nextTitle,
       report: editedReport,
     })
     .eq("id", currentMeetingId);
@@ -820,7 +1478,9 @@ async function saveEditedReport() {
   }
 
   await loadMeetings();
+  setCurrentTitle(nextTitle);
   setMessage(editedReport);
+  setEditedTitle("");
   setEditedReport("");
   setIsEditing(false);
 }
@@ -846,72 +1506,93 @@ async function saveEditedReport() {
     return parsedDate.toLocaleString("fr-FR");
   }
 
-  function downloadPDF(
-    report: string = message,
-    title: string = currentTitle || "Compte rendu de réunion",
-    fileName = "compte-rendu-reunion.pdf"
-  ) {
-    const doc = new jsPDF();
-    const lines = doc.splitTextToSize(report, 180) as string[];
-    let y = 38;
+  function formatLiveMeetingDuration(seconds: number) {
+    const safeSeconds = Math.max(0, seconds);
+    const hours = Math.floor(safeSeconds / 3600);
+    const minutes = Math.floor((safeSeconds % 3600) / 60);
+    const remainingSeconds = safeSeconds % 60;
 
-    doc.setFillColor(245, 247, 250);
-    doc.rect(0, 0, 210, 30, "F");
-    doc.setTextColor(20, 20, 20);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(18);
-    doc.text(title, 15, 18);
+    return [hours, minutes, remainingSeconds]
+      .map((value) => String(value).padStart(2, "0"))
+      .join(":");
+  }
 
-    lines.forEach((line) => {
-      if (y > 280) {
-        doc.addPage();
-        y = 20;
+  function parseReportSections(report: string) {
+    const sections: { title: string; content: string }[] = [];
+    let currentTitle = "Compte rendu";
+    let currentContent: string[] = [];
+
+    report.split("\n").forEach((line) => {
+      const headingMatch = line.match(/^#\s+(.+)$/);
+
+      if (headingMatch) {
+        if (currentContent.join("").trim()) {
+          sections.push({
+            title: currentTitle,
+            content: currentContent.join("\n").trim(),
+          });
+        }
+
+        currentTitle = headingMatch[1].trim();
+        currentContent = [];
+        return;
       }
 
-      const isSectionTitle =
-        line === line.toUpperCase() && line.length > 3 && !line.startsWith("-");
-
-      if (isSectionTitle) {
-        y += y === 38 ? 0 : 4;
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(13);
-        doc.setTextColor(20, 20, 20);
-      } else {
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(10.5);
-        doc.setTextColor(50, 50, 50);
-      }
-
-      doc.text(line, 15, y);
-      y += isSectionTitle ? 8 : 6;
+      currentContent.push(line);
     });
 
-    doc.save(fileName);
+    if (currentContent.join("").trim()) {
+      sections.push({
+        title: currentTitle,
+        content: currentContent.join("\n").trim(),
+      });
+    }
+
+    return sections;
   }
 
-  function formatPdfTask(task: Task) {
-    return [
-      `- ${task.action}`,
-      `  Responsable : ${task.responsible || "Non attribué"}`,
-      `  Échéance : ${formatPdfDate(task.due_date)}`,
-      `  Statut : ${normalizeTaskStatus(task.status)}`,
-      task.completed_at ? `  Terminé le : ${formatCompletedAt(task.completed_at)}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-  }
-
-  function buildReportPdfContent({
+  function downloadReportPDF({
+    title,
     report,
     date,
     participants,
     reportTasks,
+    fileName,
   }: {
+    title: string;
     report: string;
     date: string;
     participants: Employee[];
     reportTasks: Task[];
+    fileName: string;
   }) {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 18;
+    const contentWidth = pageWidth - margin * 2;
+    let y = 22;
+
+    const ensureSpace = (height: number) => {
+      if (y + height <= pageHeight - margin) return;
+      doc.addPage();
+      y = margin;
+    };
+
+    const addWrappedText = (
+      text: string,
+      x: number,
+      maxWidth: number,
+      lineHeight: number
+    ) => {
+      const lines = doc.splitTextToSize(text, maxWidth) as string[];
+      lines.forEach((line) => {
+        ensureSpace(lineHeight + 2);
+        doc.text(line, x, y);
+        y += lineHeight;
+      });
+    };
+
     const participantsText =
       participants.length > 0
         ? participants
@@ -924,55 +1605,113 @@ async function saveEditedReport() {
     const pendingTasks = reportTasks.filter(
       (task) => normalizeTaskStatus(task.status) !== "Fait"
     );
-    const completedTasks = reportTasks.filter(
-      (task) => normalizeTaskStatus(task.status) === "Fait"
-    );
-    const pendingTasksText =
-      pendingTasks.length > 0
-        ? pendingTasks.map(formatPdfTask).join("\n\n")
-        : reportTasks.length > 0
-          ? "Aucune tâche à faire"
-          : "Aucune tâche détectée";
-    const completedTasksText =
-      completedTasks.length > 0
-        ? completedTasks.map(formatPdfTask).join("\n\n")
-        : reportTasks.length > 0
-          ? "Aucune tâche terminée"
-          : "Aucune tâche détectée";
 
-    return [
-      "INFORMATIONS",
-      date ? `Date : ${date}` : "Date : Non renseignée",
-      `Participants : ${participantsText}`,
-      "",
-      "COMPTE RENDU",
-      report,
-      "",
-      "TÂCHES À FAIRE",
-      pendingTasksText,
-      "",
-      "TÂCHES TERMINÉES",
-      completedTasksText,
-    ].join("\n");
+    doc.setTextColor(17, 24, 39);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(22);
+    addWrappedText(title || "Compte rendu de réunion", margin, contentWidth, 8.5);
+    y += 2;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(75, 85, 99);
+    doc.text(`Date : ${date || "Non renseignée"}`, margin, y);
+    y += 7;
+    addWrappedText(`Participants : ${participantsText}`, margin, contentWidth, 6);
+    y += 4;
+    doc.setDrawColor(229, 231, 235);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 10;
+
+    parseReportSections(report).forEach((section) => {
+      ensureSpace(28);
+      doc.setFillColor(243, 244, 246);
+      doc.setDrawColor(229, 231, 235);
+      doc.roundedRect(margin, y, contentWidth, 11, 2, 2, "FD");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(17, 24, 39);
+      doc.text(section.title, margin + 4, y + 7);
+      y += 17;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10.5);
+      doc.setTextColor(55, 65, 81);
+      addWrappedText(section.content, margin, contentWidth, 6);
+      y += 5;
+    });
+
+    ensureSpace(24);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.setTextColor(17, 24, 39);
+    doc.text("Tâches à faire", margin, y);
+    y += 8;
+
+    if (pendingTasks.length === 0) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10.5);
+      doc.setTextColor(75, 85, 99);
+      doc.text("Aucune tâche à faire", margin, y);
+      y += 7;
+    } else {
+      pendingTasks.forEach((task) => {
+        const metaText = `Responsable : ${
+          task.responsible || "Non attribué"
+        }   ·   Échéance : ${formatPdfDate(
+          task.due_date
+        )}   ·   Statut : ${normalizeTaskStatus(task.status)}`;
+        const actionLines = doc.splitTextToSize(
+          task.action,
+          contentWidth - 8
+        ) as string[];
+        const metaLines = doc.splitTextToSize(
+          metaText,
+          contentWidth - 8
+        ) as string[];
+        const cardHeight =
+          12 + actionLines.length * 5.5 + metaLines.length * 5;
+
+        ensureSpace(cardHeight + 8);
+        const cardY = y;
+        doc.setFillColor(249, 250, 251);
+        doc.setDrawColor(229, 231, 235);
+        doc.roundedRect(margin, cardY, contentWidth, cardHeight, 3, 3, "FD");
+        y += 7;
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10.5);
+        doc.setTextColor(17, 24, 39);
+        actionLines.forEach((line) => {
+          doc.text(line, margin + 4, y);
+          y += 5.5;
+        });
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9.5);
+        doc.setTextColor(75, 85, 99);
+        metaLines.forEach((line) => {
+          doc.text(line, margin + 4, y);
+          y += 5;
+        });
+        y = cardY + cardHeight + 6;
+      });
+    }
+
+    doc.save(fileName);
   }
 
-  function buildCurrentReportPdfContent() {
-    return buildReportPdfContent({
+  function downloadCurrentReportPDF() {
+    downloadReportPDF({
+      title: currentTitle || "Compte rendu de réunion",
       report: message,
       date: currentMeetingDate,
       participants: currentParticipants,
       reportTasks: tasks,
-    });
-  }
-
-  function downloadCurrentReportPDF() {
-    downloadPDF(
-      buildCurrentReportPdfContent(),
-      currentTitle || "Compte rendu de réunion",
-      currentMeetingId
+      fileName: currentMeetingId
         ? `compte-rendu-${currentMeetingId}.pdf`
-        : "compte-rendu-reunion.pdf"
-    );
+        : "compte-rendu-reunion.pdf",
+    });
   }
 
   async function fetchMeetingPdfData(meetingId: number) {
@@ -1013,16 +1752,14 @@ async function saveEditedReport() {
     try {
       const { reportTasks, participants } = await fetchMeetingPdfData(meeting.id);
 
-      downloadPDF(
-        buildReportPdfContent({
+      downloadReportPDF({
+          title: meeting.title || "Compte rendu de réunion",
           report: meeting.report,
           date: new Date(meeting.created_at).toLocaleString("fr-FR"),
           participants,
           reportTasks,
-        }),
-        meeting.title || "Compte rendu de réunion",
-        `compte-rendu-${meeting.id}.pdf`
-      );
+          fileName: `compte-rendu-${meeting.id}.pdf`,
+        });
     } catch (error) {
       console.error(error);
       alert("Erreur lors de la préparation du PDF.");
@@ -1035,9 +1772,13 @@ async function saveEditedReport() {
       return;
     }
 
+    const nextTitle =
+      editedHistoryTitle.trim() || historyTitle || "Compte rendu de réunion";
+
     const { error } = await supabase
       .from("meetings")
       .update({
+        title: nextTitle,
         report: editedHistoryReport,
       })
       .eq("id", openedHistoryMeetingId);
@@ -1048,36 +1789,27 @@ async function saveEditedReport() {
       return;
     }
 
+    setHistoryTitle(nextTitle);
     setHistoryMessage(editedHistoryReport);
+    setEditedHistoryTitle("");
     setEditedHistoryReport("");
     setIsEditingHistory(false);
     await loadMeetings();
   }
 
   function downloadHistoryReportPDF() {
-    downloadPDF(
-      buildReportPdfContent({
+    downloadReportPDF({
+        title: historyTitle || "Compte rendu de réunion",
         report: historyMessage,
         date: historyDate,
         participants: historyParticipants,
         reportTasks: historyTasks,
-      }),
-      historyTitle || "Compte rendu de réunion",
-      openedHistoryMeetingId
+        fileName: openedHistoryMeetingId
         ? `compte-rendu-${openedHistoryMeetingId}.pdf`
-        : "compte-rendu-reunion.pdf"
-    );
+        : "compte-rendu-reunion.pdf",
+      });
   }
 
-  function openHistoryBulkTasksModal() {
-    closeAllMenus();
-    sendAllPendingTasks(historyTasks);
-  }
-
-  function openCurrentBulkTasksModal() {
-    closeAllMenus();
-    sendAllPendingTasks(tasks);
-  }
   async function loadMeetingTasks(meetingId: number) {
   const { data, error } = await supabase
     .from("tasks")
@@ -1446,34 +2178,102 @@ function getUrgentTasks(sourceTasks: Task[]) {
   };
 }
 
-function getTopOpenTaskEmployee(sourceTasks: Task[]) {
-  const openTasks = getOpenTasks(sourceTasks);
-  const taskCounts = new Map<number, number>();
+function getMeetingFolderById(folderId: number | null | undefined) {
+  if (!folderId) return null;
+  return meetingFolders.find((folder) => folder.id === folderId) || null;
+}
 
-  openTasks.forEach((task) => {
-    if (!task.responsible_employee_id) return;
-    taskCounts.set(
-      task.responsible_employee_id,
-      (taskCounts.get(task.responsible_employee_id) || 0) + 1
-    );
-  });
+function getMeetingTasks(meetingId: number, sourceTasks: Task[] = dashboardTasks) {
+  return sourceTasks.filter((task) => task.meeting_id === meetingId);
+}
 
-  const topEntry = [...taskCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+function getEmptySectionMessage(title: string | null) {
+  const normalizedTitle = (title || "").toLowerCase();
 
-  if (!topEntry) {
-    return null;
+  if (normalizedTitle.includes("décision")) {
+    return "Aucune décision claire n’a été prise pendant cette réunion.";
   }
 
-  const employee = employees.find((currentEmployee) => currentEmployee.id === topEntry[0]);
-
-  if (!employee) {
-    return null;
+  if (normalizedTitle.includes("risque") || normalizedTitle.includes("clarifier")) {
+    return "Aucun risque particulier n’a été identifié.";
   }
 
-  return {
-    employee,
-    count: topEntry[1],
-  };
+  if (normalizedTitle.includes("point")) {
+    return "Aucun point clé supplémentaire n’a été relevé.";
+  }
+
+  return "Aucune information supplémentaire n’a été identifiée.";
+}
+
+function hasSensitiveInformation(report: string) {
+  return [
+    /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/i,
+    /\bRIB\b/i,
+    /mot de passe|password|identifiant confidentiel/i,
+    /salaire|rémunération|bulletin de paie/i,
+    /donnée bancaire|carte bancaire|coordonnées bancaires/i,
+    /confidentiel|information personnelle|donnée personnelle/i,
+  ].some((pattern) => pattern.test(report));
+}
+
+function copySectionContent(content: string, label: string) {
+  navigator.clipboard
+    ?.writeText(content)
+    .then(() => {
+      setCopiedNotice(`✓ ${label} copié dans le presse-papiers`);
+      window.setTimeout(() => setCopiedNotice(""), 2200);
+    })
+    .catch((error) => {
+      console.error(error);
+      setCopiedNotice("Impossible de copier cette section.");
+      window.setTimeout(() => setCopiedNotice(""), 2200);
+    });
+}
+
+function toggleReportSection(sectionKey: string) {
+  setOpenReportSections((currentSections) => ({
+    ...currentSections,
+    [sectionKey]: !(currentSections[sectionKey] ?? true),
+  }));
+}
+
+function renderGenerationProgress() {
+  const steps = [
+    "🎙️ Transcription audio…",
+    "🧠 Analyse de la réunion…",
+    "📝 Rédaction du compte rendu…",
+    "✅ Vérification finale…",
+  ];
+  const progress = ((generationStepIndex + 1) / steps.length) * 100;
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+      <div className="mb-4 space-y-2">
+        {steps.map((step, index) => (
+          <div
+            key={step}
+            className={`flex items-center gap-2 text-sm ${
+              index <= generationStepIndex ? "text-gray-950" : "text-gray-400"
+            }`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                index <= generationStepIndex ? "bg-gray-950" : "bg-gray-300"
+              }`}
+            />
+            {step}
+          </div>
+        ))}
+      </div>
+
+      <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+        <div
+          className="h-full rounded-full bg-gray-900 transition-all duration-700"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+    </div>
+  );
 }
 
 function renderReportContent(report: string) {
@@ -1510,24 +2310,56 @@ function renderReportContent(report: string) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       {sections.map((section, index) =>
         section.title ? (
           <section
             key={`${section.title}-${index}`}
-            className="space-y-2"
+            className="space-y-4"
           >
-            <h3 className="inline-flex rounded bg-black px-3 py-1 text-sm font-semibold text-white">
-              {section.title}
-            </h3>
-            <div className="whitespace-pre-wrap text-sm leading-6 text-gray-700">
-              {section.content.join("\n").trim() || "Aucun contenu renseigné."}
-            </div>
+            {(() => {
+              const sectionKey = `${section.title}-${index}`;
+              const sectionText =
+                section.content.join("\n").trim() ||
+                getEmptySectionMessage(section.title);
+              const isOpen = openReportSections[sectionKey] ?? true;
+
+              return (
+                <>
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-4 py-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleReportSection(sectionKey)}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-semibold text-gray-950"
+                    >
+                      <span className="text-gray-500">{isOpen ? "▼" : "▶"}</span>
+                      <span>{section.title}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        copySectionContent(sectionText, section.title || "Section")
+                      }
+                      className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:bg-gray-100"
+                    >
+                      📋 Copier
+                    </button>
+                  </div>
+
+                  {isOpen && (
+                    <div className="whitespace-pre-wrap text-[15px] leading-7 text-gray-700">
+                      {sectionText}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </section>
         ) : (
           <div
             key={`intro-${index}`}
-            className="whitespace-pre-wrap text-sm leading-6 text-gray-700"
+            className="whitespace-pre-wrap text-[15px] leading-7 text-gray-700"
           >
             {section.content.join("\n").trim()}
           </div>
@@ -1579,25 +2411,15 @@ async function sendTaskToResponsible(task: Task) {
     return;
   }
 
-  const meetingTitle = currentTitle || "Réunion sans titre";
-  const taskEmailBody = `Bonjour ${responsibleEmployee.name},
-
-Une tâche vous a été assignée suite à la réunion "${meetingTitle}".
-
-Réunion :
-${meetingTitle}
-
-Action à faire :
-${task.action}
-
-Échéance :
-${task.due_date || "Non renseignée"}
-
-Statut :
-${normalizeTaskStatus(task.status)}
-
-Cordialement,
-BriefLy`;
+  const isHistoryTask = task.meeting_id === openedHistoryMeetingId;
+  const meetingTitle =
+    (isHistoryTask ? historyTitle : currentTitle) || "Réunion sans titre";
+  const meetingDate = isHistoryTask ? historyDate : currentMeetingDate;
+  const meetingParticipants = isHistoryTask
+    ? historyParticipants
+    : currentParticipants;
+  const meetingReport = isHistoryTask ? historyMessage : message;
+  const meetingId = isHistoryTask ? openedHistoryMeetingId : currentMeetingId;
 
   const response = await fetch("/api/send-email", {
     method: "POST",
@@ -1608,7 +2430,18 @@ BriefLy`;
       emails: [responsibleEmployee.email],
       title: meetingTitle,
       subject: `Tâche assignée - ${meetingTitle}`,
-      report: taskEmailBody,
+      meetingDate,
+      participants: meetingParticipants.map((participant) => participant.name),
+      summary: `Une tâche vous a été assignée suite à la réunion "${meetingTitle}".`,
+      report: meetingReport,
+      tasks: [
+        {
+          action: task.action,
+          due_date: task.due_date,
+          status: normalizeTaskStatus(task.status),
+        },
+      ],
+      ctaUrl: getBrieflyReportUrl(meetingId),
     }),
   });
 
@@ -1941,16 +2774,6 @@ function getPendingTasksByResponsible(
   return { tasksByEmployee, ignoredTasks, pendingTasks };
 }
 
-function sendAllPendingTasks(sourceTasks: Task[] = tasks) {
-  const pendingTasks = sourceTasks.filter(
-    (task) => normalizeTaskStatus(task.status) !== "Fait"
-  );
-
-  setBulkTaskSource(sourceTasks);
-  setSelectedBulkTaskIds(pendingTasks.map((task) => task.id));
-  setShowBulkTasksModal(true);
-}
-
 async function confirmSendSelectedTasks() {
   const { tasksByEmployee, ignoredTasks, pendingTasks } =
     getPendingTasksByResponsible(selectedBulkTaskIds, bulkTaskSource);
@@ -1971,14 +2794,20 @@ async function confirmSendSelectedTasks() {
     setEmailStatus("Envoi des tâches en cours...");
 
     for (const [employee, employeeTasks] of tasksByEmployee) {
-      const taskList = employeeTasks
-        .map(
-          (task, index) =>
-            `${index + 1}. ${task.action}\n   Échéance : ${
-              task.due_date || "Non renseignée"
-            }\n   Statut : ${normalizeTaskStatus(task.status)}`
-        )
-        .join("\n\n");
+      const isHistorySource =
+        openedHistoryMeetingId !== null &&
+        employeeTasks.some((task) => task.meeting_id === openedHistoryMeetingId);
+      const emailTitle =
+        (isHistorySource ? historyTitle : currentTitle) ||
+        "Compte rendu de réunion";
+      const emailDate = isHistorySource ? historyDate : currentMeetingDate;
+      const emailParticipants = isHistorySource
+        ? historyParticipants
+        : currentParticipants;
+      const emailReport = isHistorySource ? historyMessage : message;
+      const emailMeetingId = isHistorySource
+        ? openedHistoryMeetingId
+        : currentMeetingId;
 
       const response = await fetch("/api/send-email", {
         method: "POST",
@@ -1987,18 +2816,18 @@ async function confirmSendSelectedTasks() {
         },
         body: JSON.stringify({
           emails: [employee.email],
-          title: currentTitle || "Compte rendu de réunion",
-          subject: `Tâches à faire - ${currentTitle || "Réunion"}`,
-          report: `Bonjour ${employee.name},
-
-Voici vos tâches à faire suite à la réunion "${
-            currentTitle || "Réunion sans titre"
-          }".
-
-${taskList}
-
-Cordialement,
-Briefly`,
+          title: emailTitle,
+          subject: `Tâches à faire - ${emailTitle}`,
+          meetingDate: emailDate,
+          participants: emailParticipants.map((participant) => participant.name),
+          summary: `Voici vos tâches à faire suite à la réunion "${emailTitle}".`,
+          report: emailReport,
+          tasks: employeeTasks.map((task) => ({
+            action: task.action,
+            due_date: task.due_date,
+            status: normalizeTaskStatus(task.status),
+          })),
+          ctaUrl: getBrieflyReportUrl(emailMeetingId),
         }),
       });
 
@@ -2106,15 +2935,6 @@ async function confirmReminderEmails() {
     setReminderStatus("Relance des tâches en cours...");
 
     for (const [employee, employeeTasks] of tasksByEmployee) {
-      const taskList = employeeTasks
-        .map(
-          (task, index) =>
-            `${index + 1}. ${task.action}\n   Échéance : ${
-              task.due_date || "Non renseignée"
-            }\n   Statut : ${normalizeTaskStatus(task.status)}`
-        )
-        .join("\n\n");
-
       await fetch("/api/send-email", {
         method: "POST",
         headers: {
@@ -2124,14 +2944,14 @@ async function confirmReminderEmails() {
           emails: [employee.email],
           title: "Relance de tâches en retard",
           subject: "Relance - tâches en retard",
-          report: `Bonjour ${employee.name},
-
-Voici vos tâches en retard dans Briefly :
-
-${taskList}
-
-Cordialement,
-Briefly`,
+          summary: "Voici les tâches à relancer dans Briefly.",
+          report: "Relance de tâches en retard.",
+          tasks: employeeTasks.map((task) => ({
+            action: task.action,
+            due_date: task.due_date,
+            status: normalizeTaskStatus(task.status),
+          })),
+          ctaUrl: getBrieflyReportUrl(null),
         }),
       }).then(async (response) => {
         if (!response.ok) {
@@ -2235,6 +3055,7 @@ async function loadHistoryMeetingParticipants(meetingId: number) {
 
 async function openHistoryMeetingInline(meeting: Meeting) {
   closeAllMenus();
+  setHistoryScrollBeforeOpen(window.scrollY);
   setOpenedHistoryMeetingId(meeting.id);
   setHistoryTitle(meeting.title);
   setHistoryDate(new Date(meeting.created_at).toLocaleString("fr-FR"));
@@ -2242,11 +3063,38 @@ async function openHistoryMeetingInline(meeting: Meeting) {
   setHistoryParticipants([]);
   setHistoryTasks([]);
   setIsEditingHistory(false);
+  setEditedHistoryTitle("");
   setEditedHistoryReport("");
+  setIsHistoryParticipantsOpen(false);
+  setIsHistoryTasksOpen(false);
   await Promise.all([
     loadHistoryMeetingTasks(meeting.id),
     loadHistoryMeetingParticipants(meeting.id),
   ]);
+}
+
+async function openDashboardMeetingInHistory(meeting: Meeting) {
+  closeAllMenus();
+  setMeetingSearch("");
+
+  const folderId = meeting.folder_id;
+
+  if (folderId) {
+    setExpandedFolderIds((currentIds) =>
+      currentIds.includes(folderId)
+        ? currentIds
+        : [...currentIds, folderId]
+    );
+  }
+
+  setActiveSection("history");
+  await openHistoryMeetingInline(meeting);
+
+  window.setTimeout(() => {
+    document
+      .getElementById(`history-meeting-${meeting.id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 120);
 }
 
 function closeHistoryMeetingInline() {
@@ -2257,7 +3105,84 @@ function closeHistoryMeetingInline() {
   setHistoryParticipants([]);
   setHistoryTasks([]);
   setIsEditingHistory(false);
+  setEditedHistoryTitle("");
   setEditedHistoryReport("");
+  setIsHistoryParticipantsOpen(false);
+  setIsHistoryTasksOpen(false);
+  window.setTimeout(() => {
+    window.scrollTo({ top: historyScrollBeforeOpen, behavior: "smooth" });
+  }, 0);
+}
+
+function resetCurrentReport() {
+  setCurrentTitle("");
+  setCurrentMeetingId(null);
+  setCurrentMeetingDate("");
+  setCurrentParticipants([]);
+  setMessage("");
+  setReportError("");
+  setEditedTitle("");
+  setEditedReport("");
+  setTasks([]);
+  setIsEditing(false);
+  setIsCurrentParticipantsOpen(false);
+  setIsCurrentTasksOpen(false);
+}
+
+function hasCurrentUnsavedChanges() {
+  return isEditing && (editedReport !== message || editedTitle !== currentTitle);
+}
+
+function hasHistoryUnsavedChanges() {
+  return (
+    isEditingHistory &&
+    (editedHistoryReport !== historyMessage || editedHistoryTitle !== historyTitle)
+  );
+}
+
+function requestCloseCurrentReport() {
+  if (hasCurrentUnsavedChanges()) {
+    setPendingCloseTarget("current");
+    return;
+  }
+
+  resetCurrentReport();
+}
+
+function requestCloseHistoryMeeting() {
+  if (hasHistoryUnsavedChanges()) {
+    setPendingCloseTarget("history");
+    return;
+  }
+
+  closeHistoryMeetingInline();
+}
+
+async function saveBeforeClosing() {
+  if (pendingCloseTarget === "current") {
+    await saveEditedReport();
+    resetCurrentReport();
+  }
+
+  if (pendingCloseTarget === "history") {
+    await saveEditedHistoryReport();
+    closeHistoryMeetingInline();
+  }
+
+  setPendingCloseTarget(null);
+}
+
+function ignoreChangesAndClose() {
+  const target = pendingCloseTarget;
+  setPendingCloseTarget(null);
+
+  if (target === "current") {
+    resetCurrentReport();
+  }
+
+  if (target === "history") {
+    closeHistoryMeetingInline();
+  }
 }
 const filteredEmployees = employees.filter((employee) => {
   const search = employeeSearch.toLowerCase();
@@ -2276,41 +3201,114 @@ const filteredParticipantEmployees = employees.filter((employee) => {
     employee.email?.toLowerCase().includes(search)
   );
 });
+
+function getMeetingSearchText(meeting: Meeting) {
+  const folder = getMeetingFolderById(meeting.folder_id);
+  const meetingTasks = getMeetingTasks(meeting.id);
+  const participants = meetingParticipantsByMeetingId[meeting.id] || [];
+
+  return [
+    folder?.name,
+    folder?.description,
+    meeting.title,
+    meeting.file_name,
+    meeting.report,
+    new Date(meeting.created_at).toLocaleString("fr-FR"),
+    ...participants.flatMap((participant) => [
+      participant.name,
+      participant.role,
+      participant.email,
+    ]),
+    ...meetingTasks.flatMap((task) => [
+      task.action,
+      task.responsible,
+      task.due_date,
+      normalizeTaskStatus(task.status),
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function getTaskSearchText(task: Task) {
+  const meeting = meetings.find((currentMeeting) => currentMeeting.id === task.meeting_id);
+  const folder = getMeetingFolderById(meeting?.folder_id);
+  const responsibleEmployee = task.responsible_employee_id
+    ? employees.find((employee) => employee.id === task.responsible_employee_id)
+    : null;
+  const participants = meeting ? meetingParticipantsByMeetingId[meeting.id] || [] : [];
+
+  return [
+    task.action,
+    task.responsible,
+    task.due_date,
+    normalizeTaskStatus(task.status),
+    meeting?.title,
+    meeting?.file_name,
+    meeting?.report,
+    folder?.name,
+    folder?.description,
+    responsibleEmployee?.name,
+    responsibleEmployee?.role,
+    responsibleEmployee?.email,
+    ...participants.flatMap((participant) => [
+      participant.name,
+      participant.role,
+      participant.email,
+    ]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function getEmployeeSearchText(employee: Employee) {
+  const employeeTasks = dashboardTasks.filter(
+    (task) =>
+      task.responsible_employee_id === employee.id ||
+      task.responsible?.toLowerCase() === employee.name.toLowerCase()
+  );
+  const participantMeetings = meetings.filter((meeting) =>
+    (meetingParticipantsByMeetingId[meeting.id] || []).some(
+      (participant) => participant.id === employee.id
+    )
+  );
+
+  return [
+    employee.name,
+    employee.role,
+    employee.email,
+    ...employeeTasks.map((task) => task.action),
+    ...participantMeetings.map((meeting) => meeting.title),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 const filteredMeetings = meetings.filter((meeting) => {
   const search = meetingSearch.toLowerCase();
+  const matchesSearch = !search || getMeetingSearchText(meeting).includes(search);
 
-  const meetingDate = new Date(meeting.created_at);
-  const now = new Date();
-
-  const dateText = meetingDate.toLocaleString("fr-FR").toLowerCase();
-
-  const matchesSearch =
-    meeting.title.toLowerCase().includes(search) ||
-    meeting.file_name.toLowerCase().includes(search) ||
-    meeting.report.toLowerCase().includes(search) ||
-    dateText.includes(search);
-
-  const isToday = meetingDate.toDateString() === now.toDateString();
-
-  const startOfWeek = new Date(now);
-  startOfWeek.setDate(now.getDate() - now.getDay() + 1);
-  startOfWeek.setHours(0, 0, 0, 0);
-
-  const isThisWeek = meetingDate >= startOfWeek;
-
-  const isThisMonth =
-    meetingDate.getMonth() === now.getMonth() &&
-    meetingDate.getFullYear() === now.getFullYear();
-
-  const matchesFilter =
-    meetingFilter === "all" ||
-    (meetingFilter === "today" && isToday) ||
-    (meetingFilter === "week" && isThisWeek) ||
-    (meetingFilter === "month" && isThisMonth);
-
-  return matchesSearch && matchesFilter;
+  return matchesSearch;
 });
-	const filteredTasks = tasks.filter((task) => {
+
+const folderGroups = meetingFolders
+  .map((folder) => ({
+    folder,
+    meetings: filteredMeetings.filter((meeting) => meeting.folder_id === folder.id),
+  }))
+  .filter((group) => group.meetings.length > 0 || !meetingSearch.trim());
+const unfiledMeetings = filteredMeetings.filter((meeting) => !meeting.folder_id);
+const folderModalMeetings =
+  folderModalMode === "add" && activeFolder
+    ? meetings.filter((meeting) => meeting.folder_id !== activeFolder.id)
+    : folderModalMode === "remove" && activeFolder
+      ? meetings.filter((meeting) => meeting.folder_id === activeFolder.id)
+      : meetings;
+
+			const filteredTasks = tasks.filter((task) => {
 	  const taskStatus = normalizeTaskStatus(task.status);
 	  const matchesResponsible =
 	    selectedResponsible === "Tous" ||
@@ -2322,8 +3320,385 @@ const filteredMeetings = meetings.filter((meeting) => {
 	    (taskStatusFilter === "progress" && taskStatus === "En cours") ||
 	    (taskStatusFilter === "todo" && taskStatus === "À faire");
 
-  return matchesResponsible && matchesStatus;
-});
+	  return matchesResponsible && matchesStatus;
+	});
+
+  function renderHistoryMeetingCard(meeting: Meeting) {
+    return (
+      <div
+        key={meeting.id}
+        id={`history-meeting-${meeting.id}`}
+        className="relative scroll-mt-6 rounded-lg border bg-white p-4 pr-12"
+      >
+        <button
+          type="button"
+          data-menu-trigger
+          aria-label={`Ouvrir le menu de la réunion ${meeting.title}`}
+          aria-expanded={openMeetingMenuId === meeting.id}
+          onClick={(e) => {
+            e.stopPropagation();
+
+            const shouldOpenMenu = openMeetingMenuId !== meeting.id;
+
+            closeAllMenus();
+
+            if (shouldOpenMenu) {
+              setOpenMeetingMenuId(meeting.id);
+            }
+          }}
+          className="absolute right-3 top-3 px-2 text-gray-500 hover:text-black"
+        >
+          ⋯
+        </button>
+
+        {openMeetingMenuId === meeting.id && (
+          <div
+            data-menu-content
+            onClick={(e) => e.stopPropagation()}
+            className="absolute right-3 top-10 z-50 min-w-[220px] overflow-hidden rounded border bg-white shadow-lg"
+          >
+            {meetingFolders.length > 0 || meeting.folder_id ? (
+              <div className="py-1">
+                {meetingFolders.length > 0 && (
+                  <>
+                <p className="px-3 py-1 text-xs font-semibold text-gray-500">
+                  Déplacer vers un dossier
+                </p>
+                {meetingFolders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      await updateMeetingFolder([meeting.id], folder.id);
+                      closeAllMenus();
+                    }}
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+                  >
+                    📁 {folder.name}
+                  </button>
+                ))}
+                  </>
+                )}
+                {meeting.folder_id && (
+                  <button
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      await updateMeetingFolder([meeting.id], null);
+                      closeAllMenus();
+                    }}
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+                  >
+                    Retirer du dossier
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="px-3 py-2 text-sm text-gray-500">
+                Aucun dossier disponible.
+              </p>
+            )}
+          </div>
+        )}
+
+        <p className="font-semibold">{meeting.title}</p>
+        <p className="text-sm text-gray-500">
+          {new Date(meeting.created_at).toLocaleString("fr-FR")}
+        </p>
+        <p className="text-sm text-gray-500">{meeting.file_name}</p>
+
+        <div className="mt-3 flex gap-3">
+          <button
+            onClick={() => {
+              closeAllMenus();
+              openHistoryMeetingInline(meeting);
+            }}
+            className="rounded bg-black px-3 py-1 text-sm text-white"
+          >
+            Ouvrir
+          </button>
+
+          <button
+            onClick={() => {
+              closeAllMenus();
+              downloadMeetingPDF(meeting);
+            }}
+            className="rounded border px-3 py-1 text-sm"
+          >
+            PDF
+          </button>
+
+          <button
+            onClick={() => {
+              closeAllMenus();
+              deleteMeeting(meeting.id);
+            }}
+            className="rounded bg-red-600 px-3 py-1 text-sm text-white"
+          >
+            Supprimer
+          </button>
+        </div>
+
+        {openedHistoryMeetingId === meeting.id && (
+          <div className="mt-4 rounded border bg-gray-50 p-4">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-gray-600">
+                  Compte rendu ouvert
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={requestCloseHistoryMeeting}
+                className="rounded border px-3 py-1 text-sm"
+              >
+                Fermer
+              </button>
+            </div>
+
+            <div className="mb-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isEditingHistory) {
+                    setEditedHistoryTitle("");
+                    setEditedHistoryReport("");
+                    setIsEditingHistory(false);
+                    return;
+                  }
+
+                  setEditedHistoryTitle(historyTitle);
+                  setEditedHistoryReport(historyMessage);
+                  setIsEditingHistory(true);
+                }}
+                className={`rounded px-3 py-1 text-sm ${
+                  isEditingHistory
+                    ? "border bg-white text-black"
+                    : "bg-black text-white"
+                }`}
+              >
+                {isEditingHistory ? "Annuler la modification" : "Modifier"}
+              </button>
+
+              <button
+                type="button"
+                onClick={downloadHistoryReportPDF}
+                className="rounded border px-3 py-1 text-sm"
+              >
+                PDF
+              </button>
+
+              <button
+                type="button"
+                onClick={() => openSendReportModal("history")}
+                className="rounded border px-3 py-1 text-sm"
+              >
+                📤 Envoyer
+              </button>
+            </div>
+
+            <div className="mb-4">
+              {isEditingHistory ? (
+                <input
+                  type="text"
+                  value={editedHistoryTitle}
+                  onChange={(e) => setEditedHistoryTitle(e.target.value)}
+                  className="w-full rounded border px-3 py-2 text-xl font-bold"
+                />
+              ) : (
+                <h3 className="text-xl font-bold">
+                  {historyTitle || "Compte rendu de réunion"}
+                </h3>
+              )}
+              <div className="mt-2 flex flex-wrap gap-3 text-sm text-gray-600">
+                <span>📅 {historyDate || "Date non renseignée"}</span>
+                <span>⏱️ Durée non renseignée</span>
+                <span>👥 {historyParticipants.length} participant(s)</span>
+              </div>
+            </div>
+
+            <div className="mb-4 rounded border bg-white">
+              <button
+                type="button"
+                onClick={() =>
+                  setIsHistoryParticipantsOpen(
+                    (currentIsOpen) => !currentIsOpen
+                  )
+                }
+                className="flex w-full items-center justify-between px-3 py-2 text-left font-semibold"
+              >
+                <span>Participants présents ({historyParticipants.length})</span>
+                <span className="text-gray-500">
+                  {isHistoryParticipantsOpen ? "▼" : "▶"}
+                </span>
+              </button>
+
+              {isHistoryParticipantsOpen && (
+                <div className="border-t px-3 py-3">
+                  {historyParticipants.length > 0 ? (
+                    <ul className="list-inside list-disc text-sm text-gray-700">
+                      {historyParticipants.map((participant) => (
+                        <li key={participant.id}>
+                          {participant.name}
+                          {participant.role ? ` (${participant.role})` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-sm text-gray-600">
+                      Aucun participant renseigné.
+                    </p>
+                  )}
+                </div>
+              )}
+              </div>
+
+            {isEditingHistory ? (
+              <div>
+                <textarea
+                  value={editedHistoryReport}
+                  onChange={(e) => setEditedHistoryReport(e.target.value)}
+                  className="min-h-[300px] w-full rounded border p-3"
+                />
+
+                {(editedHistoryReport !== historyMessage ||
+                  editedHistoryTitle !== historyTitle) && (
+                <div className="mt-3 flex gap-3 transition-all duration-200">
+                  <button
+                    type="button"
+                    onClick={saveEditedHistoryReport}
+                    className="rounded bg-black px-4 py-2 text-white"
+                  >
+                    Enregistrer
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditedHistoryTitle("");
+                      setEditedHistoryReport("");
+                      setIsEditingHistory(false);
+                    }}
+                    className="rounded border px-4 py-2"
+                  >
+                    Annuler
+                  </button>
+                </div>
+                )}
+              </div>
+            ) : (
+              <>
+                {hasSensitiveInformation(historyMessage) && (
+                  <p className="mb-4 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                    🔒 Ce compte rendu contient des informations sensibles.
+                  </p>
+                )}
+                {renderReportContent(historyMessage)}
+              </>
+            )}
+
+            <div className="mt-4 rounded border bg-white">
+              <button
+                type="button"
+                onClick={() =>
+                  setIsHistoryTasksOpen((currentIsOpen) => !currentIsOpen)
+                }
+                className="flex w-full items-center justify-between px-3 py-2 text-left font-semibold"
+              >
+                <span>Tâches ({historyTasks.length})</span>
+                <span className="flex items-center gap-2">
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copySectionContent(
+                        historyTasks.length > 0
+                          ? historyTasks.map((task) => task.action).join("\n")
+                          : "Aucune tâche n’a été identifiée.",
+                        "Tâches"
+                      );
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        copySectionContent(
+                          historyTasks.length > 0
+                            ? historyTasks.map((task) => task.action).join("\n")
+                            : "Aucune tâche n’a été identifiée.",
+                          "Tâches"
+                        );
+                      }
+                    }}
+                    className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600"
+                  >
+                    📋 Copier
+                  </span>
+                  <span className="text-gray-500">
+                    {isHistoryTasksOpen ? "▼" : "▶"}
+                  </span>
+                </span>
+              </button>
+
+              {isHistoryTasksOpen && (
+                <div className="space-y-2 border-t p-3">
+                  {historyTasks.length > 0 ? (
+                  <>
+                  {historyTasks.map((task) => {
+                    const isCompleted = normalizeTaskStatus(task.status) === "Fait";
+
+                    return (
+                      <div
+                        key={task.id}
+                        className={`relative rounded border p-2 pr-12 ${getTaskDueDateClass(
+                          task
+                        )}`}
+                      >
+                        {renderTaskMenu(task)}
+
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <p
+                            className={`font-medium ${
+                              isCompleted ? "text-green-800" : ""
+                            }`}
+                          >
+                            {task.action}
+                          </p>
+
+                          {renderTaskStatusBadge(task, "mt-0")}
+                        </div>
+
+                        <p className="text-sm text-gray-600">
+                          Responsable : {task.responsible || "Non attribué"}
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          Échéance : {task.due_date || "Non renseignée"}
+                        </p>
+                        {isCompleted && task.completed_at && (
+                          <p className="text-sm text-green-700">
+                            Terminé le : {formatCompletedAt(task.completed_at)}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                  </>
+                  ) : (
+                    <p className="text-sm text-gray-600">
+                      Aucune tâche n’a été identifiée.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <main className="min-h-screen flex flex-col items-center p-8">
@@ -2333,7 +3708,7 @@ const filteredMeetings = meetings.filter((meeting) => {
         Transformez vos réunions audio en comptes rendus clairs.
       </p>
 
-      <nav className="mb-8 flex flex-wrap justify-center gap-2">
+		      <nav className="mb-10 flex flex-wrap justify-center gap-2 rounded-full bg-gray-100 p-1">
 	        {[
 	          ["dashboard", "Tableau de bord"],
 	          ["new", "Nouvelle réunion"],
@@ -2348,17 +3723,23 @@ const filteredMeetings = meetings.filter((meeting) => {
               closeAllMenus();
               setActiveSection(section as AppSection);
             }}
-            className={`rounded px-4 py-2 text-sm ${
-              activeSection === section ? "bg-black text-white" : "border"
-            }`}
+	            className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+	              activeSection === section ? "bg-black text-white" : "text-gray-700 hover:bg-white"
+	            }`}
           >
             {label}
           </button>
         ))}
 	      </nav>
+
+      {copiedNotice && (
+        <p className="mb-6 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm">
+          {copiedNotice}
+        </p>
+      )}
 	
-	      {activeSection === "dashboard" && (
-	        <section className="w-full max-w-5xl rounded-lg border p-6">
+		      {activeSection === "dashboard" && (
+		        <section className="w-full max-w-5xl p-2 sm:p-6">
 	          {(() => {
 	            const dashboardMeetings = meetings.filter((meeting) =>
 	              isDateInDashboardPeriod(meeting.created_at, dashboardPeriod)
@@ -2373,72 +3754,100 @@ const filteredMeetings = meetings.filter((meeting) => {
 	            const doneTasks = periodTasks.filter(
 	              (task) => normalizeTaskStatus(task.status) === "Fait"
 	            );
-	            const { overdueTasks, dueTodayTasks } = getUrgentTasks(periodTasks);
-	            const topEmployee = getTopOpenTaskEmployee(periodTasks);
+	            const { overdueTasks } = getUrgentTasks(periodTasks);
 	            const statCards = [
 	              {
-	                label: "Réunions",
-	                value: dashboardMeetings.length,
-	                tone: "border-gray-200 bg-white",
-	              },
-	              {
-	                label: "Tâches",
-	                value: periodTasks.length,
-	                tone: "border-gray-200 bg-white",
-	              },
-	              {
-	                label: "À faire",
-	                value: todoTasks.length,
-	                tone: "border-red-200 bg-red-50",
-	              },
-	              {
-	                label: "En cours",
-	                value: inProgressTasks.length,
-	                tone: "border-orange-200 bg-orange-50",
-	              },
-	              {
-	                label: "Fait",
-	                value: doneTasks.length,
-	                tone: "border-green-200 bg-green-50",
-	              },
-	              {
-	                label: "En retard",
-	                value: overdueTasks.length,
-	                tone: "border-red-200 bg-red-50",
-	              },
-	              {
-	                label: "Dues aujourd’hui",
-	                value: dueTodayTasks.length,
-	                tone: "border-orange-200 bg-orange-50",
-	              },
-	              {
-	                label: "Collaborateur le plus chargé",
-	                value: topEmployee
-	                  ? `${topEmployee.employee.name} (${topEmployee.count})`
-	                  : "Aucun",
-	                tone: "border-gray-200 bg-white",
-	              },
-	            ];
+		                key: "meetings" as const,
+		                label: "Réunions",
+		                value: dashboardMeetings.length,
+		                tone: "border-gray-200 bg-white",
+		              },
+		              {
+		                key: "todo" as const,
+		                label: "Tâches à faire",
+		                value: todoTasks.length,
+		                tone: "border-red-200 bg-red-50",
+		              },
+		              {
+		                key: "progress" as const,
+		                label: "Tâches en cours",
+		                value: inProgressTasks.length,
+		                tone: "border-orange-200 bg-orange-50",
+		              },
+		              {
+		                key: "done" as const,
+		                label: "Tâches terminées",
+		                value: doneTasks.length,
+		                tone: "border-green-200 bg-green-50",
+		              },
+		              {
+		                key: "overdue" as const,
+		                label: "Tâches en retard",
+		                value: overdueTasks.length,
+		                tone: "border-red-200 bg-red-50",
+		              },
+		            ];
+		            const selectedTasks =
+		              dashboardSelection === "todo"
+		                ? todoTasks
+		                : dashboardSelection === "progress"
+		                  ? inProgressTasks
+		                  : dashboardSelection === "done"
+		                    ? doneTasks
+		                    : dashboardSelection === "overdue"
+		                      ? overdueTasks
+		                      : [];
+		            const selectedTitle =
+		              statCards.find((card) => card.key === dashboardSelection)
+		                ?.label || "";
+		            const normalizedDashboardSearch = dashboardSearch
+		              .trim()
+		              .toLowerCase();
+		            const dashboardSearchResults = normalizedDashboardSearch
+		              ? {
+		                  folders: meetingFolders.filter((folder) =>
+		                    [folder.name, folder.description]
+		                      .filter(Boolean)
+		                      .join(" ")
+		                      .toLowerCase()
+		                      .includes(normalizedDashboardSearch)
+		                  ),
+		                  meetings: meetings.filter((meeting) =>
+		                    getMeetingSearchText(meeting).includes(
+		                      normalizedDashboardSearch
+		                    )
+		                  ),
+		                  tasks: dashboardTasks.filter((task) =>
+		                    getTaskSearchText(task).includes(
+		                      normalizedDashboardSearch
+		                    )
+		                  ),
+		                  employees: employees.filter((employee) =>
+		                    getEmployeeSearchText(employee).includes(
+		                      normalizedDashboardSearch
+		                    )
+		                  ),
+		                }
+		              : null;
+		            const dashboardSearchCount = dashboardSearchResults
+		              ? dashboardSearchResults.folders.length +
+		                dashboardSearchResults.meetings.length +
+		                dashboardSearchResults.tasks.length +
+		                dashboardSearchResults.employees.length
+		              : 0;
 
-	            const urgentTasks = [
-	              ...overdueTasks.map((task) => ({ task, label: "En retard" })),
-	              ...dueTodayTasks.map((task) => ({
-	                task,
-	                label: "Aujourd’hui",
-	              })),
-	            ];
-
-	            return (
-	              <>
-	                <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-	                  <div>
-	                    <h2 className="text-2xl font-bold">Tableau de bord</h2>
-	                    <p className="text-sm text-gray-600">
-	                      Vue d’ensemble des réunions et des tâches ouvertes -{" "}
-	                      {getDashboardPeriodLabel(dashboardPeriod)}.
-	                    </p>
-	                  </div>
-	                  <label className="flex items-center gap-2 text-sm">
+		            return (
+		              <>
+		                <div className="mb-6 grid gap-4 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+		                  <div className="hidden sm:block" />
+		                  <div className="text-center">
+		                    <h2 className="text-2xl font-bold">Tableau de bord</h2>
+		                    <p className="text-sm text-gray-600">
+		                      Vue d’ensemble -{" "}
+		                      {getDashboardPeriodLabel(dashboardPeriod)}.
+		                    </p>
+		                  </div>
+	                  <label className="flex items-center justify-center gap-2 text-sm sm:justify-self-end">
 	                    <span className="font-medium">Période</span>
 	                    <select
 	                      value={dashboardPeriod}
@@ -2451,141 +3860,412 @@ const filteredMeetings = meetings.filter((meeting) => {
 	                      <option value="month">Ce mois</option>
 	                      <option value="year">Cette année</option>
 	                      <option value="all">Totalité</option>
-	                    </select>
-	                  </label>
-	                </div>
+		                    </select>
+		                  </label>
+			                </div>
 
-	                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-	                  {statCards.map((card) => (
-	                    <div
-	                      key={card.label}
-	                      className={`rounded-lg border p-4 ${card.tone}`}
-	                    >
-	                      <p className="text-sm text-gray-600">{card.label}</p>
-	                      <p className="mt-2 text-2xl font-bold">{card.value}</p>
-	                    </div>
-	                  ))}
-	                </div>
+		                <input
+                          ref={dashboardSearchInputRef}
+		                  type="text"
+		                  value={dashboardSearch}
+		                  onChange={(e) => {
+		                    setDashboardSearch(e.target.value);
+		                    setDashboardSelection(null);
+		                  }}
+		                  placeholder="Rechercher un dossier, une réunion, une tâche, un collaborateur..."
+		                  className="mb-8 w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-lg shadow-sm outline-none transition focus:border-gray-400"
+		                />
 
-	                <div className="mt-6 rounded-lg border bg-white p-4">
-		                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-		                    <h3 className="text-lg font-bold">Tâches urgentes</h3>
-		                    <div className="flex items-center gap-2">
+		                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+		                  {statCards.map((card) => (
+		                    <button
+		                      key={card.label}
+		                      type="button"
+		                      onClick={() =>
+		                        setDashboardSelection((currentSelection) =>
+		                          currentSelection === card.key ? null : card.key
+		                        )
+		                      }
+		                      className={`rounded-xl border p-5 text-left transition hover:-translate-y-0.5 hover:shadow-sm ${
+		                        card.tone
+		                      } ${
+		                        dashboardSelection === card.key
+		                          ? "ring-2 ring-black"
+		                          : ""
+		                      }`}
+		                    >
+		                      <p className="text-sm text-gray-600">{card.label}</p>
+		                      <p className="mt-2 text-2xl font-bold">{card.value}</p>
+		                    </button>
+		                  ))}
+		                </div>
+
+		                {dashboardSearchResults ? (
+		                  <div className="mt-8 space-y-6">
+		                    <div className="flex items-center justify-between gap-3">
+		                      <h3 className="text-lg font-bold">
+		                        Résultats de recherche
+		                      </h3>
 		                      <span className="rounded-full bg-black px-3 py-1 text-xs font-semibold text-white">
-		                        {urgentTasks.length}
+		                        {dashboardSearchCount}
 		                      </span>
-		                      <button
-		                        type="button"
-		                        onClick={openReminderModal}
-		                        className="rounded border px-3 py-1 text-sm"
-		                      >
-		                        Relancer
-		                      </button>
 		                    </div>
-		                  </div>
 
-	                  {urgentTasks.length === 0 ? (
-	                    <p className="text-sm text-gray-600">
-	                      Aucune tâche en retard ou due aujourd’hui.
-	                    </p>
-	                  ) : (
-	                    <div className="space-y-2">
-	                      {urgentTasks.map(({ task, label }) => (
-	                        <div
-	                          key={`${label}-${task.id}`}
-	                          className={`rounded border p-3 ${
-	                            label === "En retard"
-	                              ? "border-red-200 bg-red-50"
-	                              : "border-orange-200 bg-orange-50"
-	                          }`}
-	                        >
-	                          <div className="flex flex-wrap items-start justify-between gap-3">
-	                            <p className="font-semibold">{task.action}</p>
-	                            <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-gray-700">
-	                              {label}
-	                            </span>
-	                          </div>
-	                          <p className="text-sm text-gray-600">
-	                            Responsable : {task.responsible || "Non attribué"}
-	                          </p>
-	                          <p className="text-sm text-gray-600">
-	                            Échéance : {task.due_date || "Non renseignée"}
-	                          </p>
-	                        </div>
-	                      ))}
-	                    </div>
-	                  )}
-	                </div>
-	              </>
-	            );
+		                    {dashboardSearchCount === 0 ? (
+		                      <p className="text-sm text-gray-600">
+		                        Aucun résultat trouvé.
+		                      </p>
+		                    ) : (
+		                      <div className="grid gap-4 lg:grid-cols-2">
+		                        {dashboardSearchResults.folders.length > 0 && (
+		                          <div className="rounded-xl bg-gray-50 p-4">
+		                            <h4 className="mb-3 font-semibold">Dossiers</h4>
+		                            <div className="space-y-2">
+		                              {dashboardSearchResults.folders.map((folder) => (
+		                                <div key={folder.id} className="rounded bg-white p-3">
+		                                  📁 {folder.name}
+		                                </div>
+		                              ))}
+		                            </div>
+		                          </div>
+		                        )}
+
+		                        {dashboardSearchResults.meetings.length > 0 && (
+		                          <div className="rounded-xl bg-gray-50 p-4">
+		                            <h4 className="mb-3 font-semibold">Réunions</h4>
+		                            <div className="space-y-2">
+		                              {dashboardSearchResults.meetings.map((meeting) => (
+		                                <div key={meeting.id} className="rounded bg-white p-3">
+		                                  <p className="font-medium">{meeting.title}</p>
+		                                  <p className="text-sm text-gray-500">
+		                                    {new Date(meeting.created_at).toLocaleString("fr-FR")}
+		                                  </p>
+		                                </div>
+		                              ))}
+		                            </div>
+		                          </div>
+		                        )}
+
+		                        {dashboardSearchResults.tasks.length > 0 && (
+		                          <div className="rounded-xl bg-gray-50 p-4">
+		                            <h4 className="mb-3 font-semibold">Tâches</h4>
+		                            <div className="space-y-2">
+		                              {dashboardSearchResults.tasks.map((task) => (
+		                                <div key={task.id} className="rounded bg-white p-3">
+		                                  <p className="font-medium">{task.action}</p>
+		                                  <p className="text-sm text-gray-600">
+		                                    Responsable : {task.responsible || "Non attribué"}
+		                                  </p>
+		                                </div>
+		                              ))}
+		                            </div>
+		                          </div>
+		                        )}
+
+		                        {dashboardSearchResults.employees.length > 0 && (
+		                          <div className="rounded-xl bg-gray-50 p-4">
+		                            <h4 className="mb-3 font-semibold">Collaborateurs</h4>
+		                            <div className="space-y-2">
+		                              {dashboardSearchResults.employees.map((employee) => (
+		                                <div key={employee.id} className="rounded bg-white p-3">
+		                                  <p className="font-medium">{employee.name}</p>
+		                                  <p className="text-sm text-gray-500">
+		                                    {employee.role}
+		                                  </p>
+		                                </div>
+		                              ))}
+		                            </div>
+		                          </div>
+		                        )}
+		                      </div>
+		                    )}
+		                  </div>
+		                ) : dashboardSelection && (
+		                  <div className="mt-8 rounded-xl bg-white p-5 shadow-sm">
+		                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+		                      <h3 className="text-lg font-bold">{selectedTitle}</h3>
+		                      {dashboardSelection === "overdue" && (
+		                        <button
+		                          type="button"
+		                          onClick={openReminderModal}
+		                          className="rounded border px-3 py-1 text-sm"
+		                        >
+		                          Relancer
+		                        </button>
+		                      )}
+		                    </div>
+
+		                    {dashboardSelection === "meetings" ? (
+		                      dashboardMeetings.length === 0 ? (
+		                        <p className="text-sm text-gray-600">
+		                          Aucune réunion sur cette période.
+		                        </p>
+		                      ) : (
+		                        <div className="space-y-2">
+		                          {dashboardMeetings.map((meeting) => (
+		                            <button
+		                              key={meeting.id}
+		                              type="button"
+		                              onClick={() =>
+		                                openDashboardMeetingInHistory(meeting)
+		                              }
+		                              className="w-full cursor-pointer rounded border bg-gray-50 p-3 text-left transition hover:-translate-y-0.5 hover:border-gray-300 hover:bg-white hover:shadow-sm"
+		                            >
+		                              <p className="font-semibold">{meeting.title}</p>
+		                              <p className="text-sm text-gray-500">
+		                                {new Date(
+		                                  meeting.created_at
+		                                ).toLocaleString("fr-FR")}
+		                              </p>
+		                            </button>
+		                          ))}
+		                        </div>
+		                      )
+		                    ) : selectedTasks.length === 0 ? (
+		                      <p className="text-sm text-gray-600">
+		                        Aucun élément à afficher.
+		                      </p>
+		                    ) : (
+		                      <div className="space-y-2">
+		                        {selectedTasks.map((task) => (
+		                          <div
+		                            key={task.id}
+		                            className="rounded border bg-gray-50 p-3"
+		                          >
+		                            <div className="flex flex-wrap items-start justify-between gap-3">
+		                              <p className="font-semibold">{task.action}</p>
+		                              <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-gray-700">
+		                                {normalizeTaskStatus(task.status)}
+		                              </span>
+		                            </div>
+		                            <p className="text-sm text-gray-600">
+		                              Responsable : {task.responsible || "Non attribué"}
+		                            </p>
+		                            <p className="text-sm text-gray-600">
+		                              Échéance : {task.due_date || "Non renseignée"}
+		                            </p>
+		                          </div>
+		                        ))}
+		                      </div>
+		                    )}
+		                  </div>
+		                )}
+		              </>
+		            );
 	          })()}
 	        </section>
 	      )}
 
 	      {activeSection === "new" && (
-        <section className="flex w-full max-w-3xl flex-col items-center rounded-lg border p-8 text-center">
-          <h2 className="text-2xl font-bold">Nouvelle réunion</h2>
+	        <section className="w-full max-w-4xl p-2 sm:p-6">
+          <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+            <div className="border-b border-gray-100 px-6 py-6 text-center sm:px-10">
+              <h2 className="text-3xl font-bold">Nouvelle réunion</h2>
+              <p className="mt-2 text-sm text-gray-600">
+                Lancez un enregistrement ou importez un fichier audio.
+              </p>
+            </div>
 
-      <div className="mt-6 flex justify-center">
-        {!isRecording ? (
-          <button
-            onClick={startRecording}
-            className="px-4 py-2 bg-red-600 text-white rounded"
-          >
-            Démarrer l’enregistrement
-          </button>
-        ) : (
-          <button
-            onClick={stopRecording}
-            className="px-4 py-2 bg-black text-white rounded"
-          >
-            Arrêter l’enregistrement
-          </button>
-        )}
-      </div>
+            <div className="p-6 sm:p-10">
+              {isRecording ? (
+                <div className="rounded-2xl border border-red-100 bg-red-50 p-6 text-center">
+                  <p className="text-sm font-semibold uppercase text-red-700">
+                    🎙 Assistant à l&apos;écoute
+                  </p>
+                  <p className="mt-4 font-mono text-4xl font-bold text-gray-950">
+                    {formatLiveMeetingDuration(liveMeetingElapsedSeconds)}
+                  </p>
+                  <p className="mt-3 text-sm text-gray-700">
+                    L&apos;assistant analyse automatiquement la réunion.
+                  </p>
 
-      {isRecording && (
-        <p className="mt-4 text-red-600 font-semibold">
-          Enregistrement en cours...
-        </p>
-      )}
+                  <button
+                    type="button"
+                    onClick={stopRecording}
+                    className="mt-6 rounded-xl bg-red-600 px-6 py-3 font-semibold text-white shadow-sm transition hover:bg-red-700"
+                  >
+                    ■ Arrêter l&apos;enregistrement
+                  </button>
 
-      <p className="mt-6 text-sm text-gray-500">ou importe un fichier audio :</p>
+                  {activeLiveMeetingId && (
+                    <div className="mt-6 grid gap-4 text-left md:grid-cols-2">
+                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <h3 className="font-semibold text-gray-950">Invités</h3>
+                          <span className="rounded-full bg-gray-50 px-2.5 py-1 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
+                            {invitedLiveParticipantIds.length}
+                          </span>
+                        </div>
 
-      <div className="mt-3 flex justify-center">
-        <input
-          type="file"
-          accept="audio/*"
-          onChange={(e) => {
-            const selectedFile = e.target.files?.[0];
+                        {invitedLiveParticipantIds.length === 0 ? (
+                          <p className="text-sm text-gray-500">
+                            Aucun collaborateur invité
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            {invitedLiveParticipantIds.map((employeeId) => {
+                              const employee = employees.find(
+                                (currentEmployee) =>
+                                  currentEmployee.id === employeeId
+                              );
 
-          if (selectedFile) {
-            setFile(selectedFile);
-            setMessage("");
-            setReportError("");
-            setCurrentTitle("");
-          }
-          }}
-          className="max-w-full text-sm"
-        />
-      </div>
+                              if (!employee) return null;
 
-      {file && (
-        <p className="mt-4">
-          Fichier prêt : <strong>{file.name}</strong>
-        </p>
-      )}
+                              return (
+                                <div
+                                  key={employee.id}
+                                  className="flex flex-wrap items-center justify-between gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm"
+                                >
+                                  <span>👤 {employee.name}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      markLiveParticipantAsJoined(employee.id)
+                                    }
+                                    className="rounded bg-black px-2.5 py-1.5 text-xs font-semibold text-white"
+                                  >
+                                    Marquer comme rejoint
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
 
-      <button
-        onClick={() => {
-          setPendingParticipantIds(selectedEmployees);
-          setParticipantSearch("");
-          setShowParticipantsModal(true);
-        }}
-        className="mt-8 px-4 py-2 bg-black text-white rounded"
-      >
-        Générer le compte rendu
-      </button>
+                      <div className="rounded-xl border border-gray-200 bg-white p-4">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <h3 className="font-semibold text-gray-950">
+                            Participants connectés
+                          </h3>
+                          <span className="rounded-full bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-700 ring-1 ring-green-100">
+                            {connectedLiveParticipantIds.length}
+                          </span>
+                        </div>
+
+                        {connectedLiveParticipantIds.length === 0 ? (
+                          <p className="text-sm text-gray-500">
+                            Aucun participant connecté
+                          </p>
+                        ) : (
+                          <ul className="space-y-2 text-sm text-gray-700">
+                            {connectedLiveParticipantIds.map((employeeId) => {
+                              const employee = employees.find(
+                                (currentEmployee) =>
+                                  currentEmployee.id === employeeId
+                              );
+
+                              if (!employee) return null;
+
+                              return (
+                                <li
+                                  key={employee.id}
+                                  className="rounded border border-gray-200 bg-gray-50 px-3 py-2 font-medium"
+                                >
+                                  👤 {employee.name}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex flex-wrap justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingInviteEmployeeIds([]);
+                        setShowInviteParticipantsModal(true);
+                      }}
+                      className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-100"
+                    >
+                      ➕ Inviter des collaborateurs
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openManualParticipantsFallback}
+                      className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-100"
+                    >
+                      Ajouter un participant manuellement
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mx-auto max-w-xl text-center">
+                  {file ? (
+                    <div className="rounded-2xl border border-green-100 bg-green-50 p-6">
+                      <p className="text-lg font-bold text-green-800">
+                        ✔ {message.includes("Enregistrement terminé")
+                          ? "Enregistrement terminé"
+                          : "Fichier sélectionné"}
+                      </p>
+                      <p className="mt-3 text-sm text-gray-700">
+                        Durée :{" "}
+                        {liveMeetingElapsedSeconds > 0
+                          ? formatLiveMeetingDuration(liveMeetingElapsedSeconds)
+                          : "Non renseignée"}
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-gray-900">
+                        {file.name}
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={startRecording}
+                        className="w-full rounded-2xl bg-red-600 px-6 py-5 text-lg font-bold text-white shadow-sm transition hover:bg-red-700"
+                      >
+                        ● Démarrer l&apos;enregistrement
+                      </button>
+
+                      <div className="my-6 flex items-center gap-4 text-xs font-semibold uppercase text-gray-400">
+                        <span className="h-px flex-1 bg-gray-200" />
+                        OU
+                        <span className="h-px flex-1 bg-gray-200" />
+                      </div>
+                    </>
+                  )}
+
+                  <label className="inline-flex cursor-pointer items-center justify-center rounded-xl border border-gray-300 bg-white px-5 py-3 text-sm font-semibold text-gray-900 shadow-sm transition hover:bg-gray-50">
+                    📁 Choisir un fichier audio
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      onChange={(e) => {
+                        const selectedFile = e.target.files?.[0];
+
+                        if (selectedFile) {
+                          setFile(selectedFile);
+                          setMessage("");
+                          setReportError("");
+                          setCurrentTitle("");
+                          setLiveMeetingElapsedSeconds(0);
+                        }
+                      }}
+                      className="sr-only"
+                    />
+                  </label>
+
+                  {file && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingParticipantIds(connectedLiveParticipantIds);
+                        setParticipantSearch("");
+                        setShowParticipantsModal(true);
+                      }}
+                      className="mt-6 block w-full rounded-xl bg-black px-5 py-3 font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                    >
+                      Générer le compte rendu
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </section>
       )}
 
@@ -2610,6 +4290,7 @@ const filteredMeetings = meetings.filter((meeting) => {
       {employees.length > 0 && (
         <div className="border rounded-lg p-4 w-full">
           <input
+  ref={employeeSearchInputRef}
   type="text"
   placeholder="🔍 Rechercher un collaborateur..."
   value={employeeSearch}
@@ -2740,7 +4421,7 @@ closeAllMenus();
         </div>
 
         <p>
-          <strong>Poste :</strong>{" "}
+          <strong>Poste / Entreprise :</strong>{" "}
           {selectedEmployeeProfile.role || "Non renseigné"}
         </p>
 
@@ -2806,9 +4487,7 @@ closeAllMenus();
           )}
 
           {message === GENERATING_REPORT_MESSAGE && (
-            <p className="text-sm font-medium text-gray-700">
-              {GENERATING_REPORT_MESSAGE}
-            </p>
+            renderGenerationProgress()
           )}
 
           {reportError && (
@@ -2832,12 +4511,22 @@ closeAllMenus();
   <div className="flex gap-3 mt-4">
     <button
       onClick={() => {
+        if (isEditing) {
+          setEditedTitle("");
+          setEditedReport("");
+          setIsEditing(false);
+          return;
+        }
+
+        setEditedTitle(currentTitle);
         setEditedReport(message);
         setIsEditing(true);
       }}
-      className="px-4 py-2 border rounded"
+      className={`px-4 py-2 rounded ${
+        isEditing ? "border bg-white text-black" : "bg-black text-white"
+      }`}
     >
-      Modifier le compte rendu
+      {isEditing ? "Annuler la modification" : "Modifier"}
     </button>
 
     <button
@@ -2847,22 +4536,11 @@ closeAllMenus();
       Télécharger en PDF
     </button>
 
-	    <button
-	      type="button"
-	      onClick={openCurrentBulkTasksModal}
-	      className="px-4 py-2 border rounded"
-	    >
-      Envoyer toutes les tâches
-    </button>
-
     <button
-  onClick={() => {
-    setEmailRecipients(selectedEmployees);
-    setShowEmailModal(true);
-  }}
+  onClick={() => openSendReportModal("current")}
   className="px-4 py-2 bg-black text-white rounded"
 >
-  Envoyer aux participants
+  📤 Envoyer
 </button>
   </div>
 )}
@@ -2874,121 +4552,72 @@ closeAllMenus();
 
       {message && message !== GENERATING_REPORT_MESSAGE && !reportError && (
   <div className="mt-8 max-w-3xl w-full border rounded-lg p-6 text-left">
-    {currentTitle && (
   <div className="mb-4 flex items-start justify-between gap-4">
     <div>
-      <h2 className="text-2xl font-bold">{currentTitle}</h2>
-      {currentMeetingDate && (
-        <p className="text-sm text-gray-500 mt-1">
-          {currentMeetingDate}
-        </p>
+      {isEditing ? (
+        <input
+          type="text"
+          value={editedTitle}
+          onChange={(e) => setEditedTitle(e.target.value)}
+          className="w-full rounded border px-3 py-2 text-2xl font-bold"
+        />
+      ) : (
+        <h2 className="text-2xl font-bold">
+          {currentTitle || "Compte rendu de réunion"}
+        </h2>
       )}
     </div>
 
     <button
-    onClick={() => {
-        setCurrentTitle("");
-        setCurrentMeetingId(null);
-        setCurrentMeetingDate("");
-        setCurrentParticipants([]);
-        setMessage("");
-        setReportError("");
-        setEditedReport("");
-        setTasks([]);
-        setIsEditing(false);
-      }}
+    onClick={requestCloseCurrentReport}
       className="px-3 py-1 border rounded text-sm"
     >
       Fermer
     </button>
   </div>
-)}
-    {tasks.length > 0 && (
-  <div className="flex gap-4 text-sm text-gray-600 mb-4">
-  <button
-    onClick={() => {
-      if (tasks.length === 0) return;
+    <div className="mb-4 flex flex-wrap gap-3 text-sm text-gray-600">
+      <span>📅 {currentMeetingDate || "Date non renseignée"}</span>
+      <span>
+        ⏱️{" "}
+        {liveMeetingElapsedSeconds > 0
+          ? formatLiveMeetingDuration(liveMeetingElapsedSeconds)
+          : "Durée non renseignée"}
+      </span>
+      <span>👥 {currentParticipants.length} participant(s)</span>
+    </div>
+    <div className="mb-4 rounded border bg-gray-50">
+      <button
+        type="button"
+        onClick={() =>
+          setIsCurrentParticipantsOpen((currentIsOpen) => !currentIsOpen)
+        }
+        className="flex w-full items-center justify-between px-3 py-2 text-left font-semibold"
+      >
+        <span>Participants présents ({currentParticipants.length})</span>
+        <span className="text-gray-500">
+          {isCurrentParticipantsOpen ? "▼" : "▶"}
+        </span>
+      </button>
 
-      setTaskStatusFilter("all");
-      document
-        .getElementById("actions-detectees")
-        ?.scrollIntoView({ behavior: "smooth" });
-    }}
-    className="hover:underline"
-  >
-    📝 {tasks.length} tâche{tasks.length > 1 ? "s" : ""}
-  </button>
-
-	  <button
-	    onClick={() => {
-	      const doneCount = tasks.filter(
-	        (task) => normalizeTaskStatus(task.status) === "Fait"
-	      ).length;
-
-      if (doneCount === 0) return;
-
-      setTaskStatusFilter("done");
-      document
-        .getElementById("actions-detectees")
-        ?.scrollIntoView({ behavior: "smooth" });
-    }}
-    className="hover:underline"
-	  >
-	    🟢 {tasks.filter((task) => normalizeTaskStatus(task.status) === "Fait").length} terminées
-	  </button>
-	
-	  <button
-	    onClick={() => {
-	      const progressCount = tasks.filter(
-	        (task) => normalizeTaskStatus(task.status) === "En cours"
-	      ).length;
-	
-	      if (progressCount === 0) return;
-	
-	      setTaskStatusFilter("progress");
-	      document
-	        .getElementById("actions-detectees")
-	        ?.scrollIntoView({ behavior: "smooth" });
-	    }}
-	    className="hover:underline"
-	  >
-	    🟠 {tasks.filter((task) => normalizeTaskStatus(task.status) === "En cours").length} en cours
-	  </button>
-	
-	  <button
-	    onClick={() => {
-	      const todoCount = tasks.filter(
-	        (task) => normalizeTaskStatus(task.status) === "À faire"
-	      ).length;
-	
-	      if (todoCount === 0) return;
-	
-	      setTaskStatusFilter("todo");
-	      document
-	        .getElementById("actions-detectees")
-	        ?.scrollIntoView({ behavior: "smooth" });
-	    }}
-	    className="hover:underline"
-	  >
-	    🔴 {tasks.filter((task) => normalizeTaskStatus(task.status) === "À faire").length} à faire
-	  </button>
-</div>
-)}
-   
-    {currentParticipants.length > 0 && (
-  <div className="mb-4 rounded border p-3 bg-gray-50">
-    <p className="font-semibold mb-2">Participants présents :</p>
-
-    <ul className="list-disc list-inside text-sm text-gray-700">
-      {currentParticipants.map((participant) => (
-        <li key={participant.id}>
-          {participant.name}
-          {participant.role ? ` (${participant.role})` : ""}
-        </li>
-      ))}
-    </ul>
+      {isCurrentParticipantsOpen && (
+        <div className="border-t px-3 py-3">
+          {currentParticipants.length > 0 ? (
+            <ul className="list-disc list-inside text-sm text-gray-700">
+              {currentParticipants.map((participant) => (
+                <li key={participant.id}>
+                  {participant.name}
+                  {participant.role ? ` (${participant.role})` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-gray-600">
+              Aucun participant renseigné.
+            </p>
+          )}
+        </div>
+      )}
   </div>
-)}
 
     {isEditing ? (
       <div>
@@ -2998,7 +4627,8 @@ closeAllMenus();
           className="w-full min-h-[400px] border rounded p-3"
         />
 
-        <div className="flex gap-3 mt-4">
+        {(editedReport !== message || editedTitle !== currentTitle) && (
+        <div className="flex gap-3 mt-4 transition-all duration-200">
           <button
             onClick={saveEditedReport}
             className="px-4 py-2 bg-black text-white rounded"
@@ -3008,6 +4638,7 @@ closeAllMenus();
 
           <button
             onClick={() => {
+              setEditedTitle("");
               setEditedReport("");
               setIsEditing(false);
             }}
@@ -3016,13 +4647,61 @@ closeAllMenus();
             Annuler
           </button>
         </div>
+        )}
       </div>
     ) : (
       <>
+       {hasSensitiveInformation(message) && (
+         <p className="mb-4 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+           🔒 Ce compte rendu contient des informations sensibles.
+         </p>
+       )}
 	     {renderReportContent(message)}
 
-{tasks.length > 0 && (
-  <div className="mt-6 border rounded-lg p-4 bg-gray-50">
+  <div className="mt-6 border rounded-lg bg-gray-50">
+    <button
+      type="button"
+      onClick={() => setIsCurrentTasksOpen((currentIsOpen) => !currentIsOpen)}
+      className="flex w-full items-center justify-between px-4 py-3 text-left font-bold"
+    >
+      <span id="actions-detectees">Tâches ({tasks.length})</span>
+      <span className="flex items-center gap-2">
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            copySectionContent(
+              tasks.length > 0
+                ? tasks.map((task) => task.action).join("\n")
+                : "Aucune tâche n’a été identifiée.",
+              "Tâches"
+            );
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              copySectionContent(
+                tasks.length > 0
+                  ? tasks.map((task) => task.action).join("\n")
+                  : "Aucune tâche n’a été identifiée.",
+                "Tâches"
+              );
+            }
+          }}
+          className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600"
+        >
+          📋 Copier
+        </span>
+        <span className="text-gray-500">{isCurrentTasksOpen ? "▼" : "▶"}</span>
+      </span>
+    </button>
+
+    {isCurrentTasksOpen && (
+      <div className="border-t p-4">
+        {tasks.length > 0 ? (
+          <>
     <div className="mb-3">
   <select
     value={selectedResponsible}
@@ -3041,12 +4720,6 @@ closeAllMenus();
   </select>
 </div>
 
-   <h3 id="actions-detectees" className="font-bold mb-3">
-  Actions détectées
-</h3>
-
-
-  
    <div className="space-y-3">
 	      {filteredTasks.map((task) => (
 	       <div
@@ -3085,12 +4758,19 @@ closeAllMenus();
 		            </p>
 		          )}
 
-		          {renderTaskStatusBadge(task)}
+	          {renderTaskStatusBadge(task)}
 	        </div>
                  ))}
     </div>
+          </>
+        ) : (
+          <p className="text-sm text-gray-600">
+            Aucune tâche n’a été identifiée.
+          </p>
+        )}
+      </div>
+    )}
   </div>
-)}
 
       </>
     )}
@@ -3101,332 +4781,290 @@ closeAllMenus();
 
 
 
-      {activeSection === "history" && (
-        <section className="w-full max-w-3xl rounded-lg border p-6">
-          <h2 className="text-2xl font-bold mb-4">Historique des réunions</h2>
+	      {activeSection === "history" && (
+	        <section className="w-full max-w-3xl p-2 sm:p-6">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-2xl font-bold">
+                {openedHistoryMeetingId
+                  ? "Lecture du compte rendu"
+                  : "Historique des réunions"}
+              </h2>
+              {openedHistoryMeetingId && (
+                <p className="text-sm text-gray-600">
+                  Mode lecture immersive.
+                </p>
+              )}
+            </div>
+
+            {!openedHistoryMeetingId && (
+              <button
+                type="button"
+                onClick={openCreateFolderModal}
+                className="rounded bg-black px-3 py-2 text-sm font-semibold text-white"
+              >
+                Nouveau dossier de réunions
+              </button>
+            )}
+          </div>
           {meetings.length === 0 ? (
             <p className="text-sm text-gray-600">
               Aucune réunion enregistrée pour le moment.
             </p>
+          ) : openedHistoryMeetingId ? (
+            <div className="space-y-3">
+              {meetings
+                .filter((meeting) => meeting.id === openedHistoryMeetingId)
+                .map((meeting) => renderHistoryMeetingCard(meeting))}
+            </div>
           ) : (
-            <>
-          <div className="flex gap-2 mb-4 flex-wrap">
-  <button
-    onClick={() => setMeetingFilter("all")}
-    className={`px-3 py-1 rounded ${
-      meetingFilter === "all"
-        ? "bg-black text-white"
-        : "border"
-    }`}
-  >
-    Toutes
-  </button>
+	            <>
+	          <input
+	  ref={meetingSearchInputRef}
+	  type="text"
+	  placeholder="🔍 Rechercher une réunion..."
+	  value={meetingSearch}
+	  onChange={(e) => setMeetingSearch(e.target.value)}
+	  className="mb-6 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-400"
+	/>
 
-  <button
-    onClick={() => setMeetingFilter("today")}
-    className={`px-3 py-1 rounded ${
-      meetingFilter === "today"
-        ? "bg-black text-white"
-        : "border"
-    }`}
-  >
-    Aujourd&apos;hui
-  </button>
+	          <div className="space-y-3">
+	            {filteredMeetings.length === 0 && folderGroups.length === 0 ? (
+	              <p className="rounded border bg-gray-50 p-4 text-sm text-gray-600">
+	                Aucune réunion ne correspond à cette recherche.
+	              </p>
+	            ) : (
+	              <>
+	                {folderGroups.map(({ folder, meetings: folderMeetings }) => {
+	                  const isExpanded = expandedFolderIds.includes(folder.id);
 
-  <button
-    onClick={() => setMeetingFilter("week")}
-    className={`px-3 py-1 rounded ${
-      meetingFilter === "week"
-        ? "bg-black text-white"
-        : "border"
-    }`}
-  >
-    Cette semaine
-  </button>
+	                  return (
+	                    <div key={folder.id} className="rounded-lg border bg-white">
+	                      <div className="relative flex items-center justify-between gap-3 p-4 pr-12">
+	                        <button
+	                          type="button"
+	                          onClick={() =>
+	                            setExpandedFolderIds((currentIds) =>
+	                              currentIds.includes(folder.id)
+	                                ? currentIds.filter((id) => id !== folder.id)
+	                                : [...currentIds, folder.id]
+	                            )
+	                          }
+	                          className="text-left font-semibold"
+	                        >
+	                          {isExpanded ? "▼" : "▶"} 📁 {folder.name}
+	                        </button>
 
-  <button
-    onClick={() => setMeetingFilter("month")}
-    className={`px-3 py-1 rounded ${
-      meetingFilter === "month"
-        ? "bg-black text-white"
-        : "border"
-    }`}
-  >
-    Ce mois
-  </button>
-</div>
-          <input
-  type="text"
-  placeholder="🔍 Rechercher une réunion..."
-  value={meetingSearch}
-  onChange={(e) => setMeetingSearch(e.target.value)}
-  className="w-full border rounded p-2 mb-4"
-/>
+	                        <button
+	                          type="button"
+	                          data-menu-trigger
+	                          aria-label={`Ouvrir le menu du dossier ${folder.name}`}
+	                          aria-expanded={openFolderMenuId === folder.id}
+	                          onClick={(e) => {
+	                            e.stopPropagation();
+	                            const shouldOpenMenu = openFolderMenuId !== folder.id;
+	                            closeAllMenus();
+	                            if (shouldOpenMenu) {
+	                              setOpenFolderMenuId(folder.id);
+	                            }
+	                          }}
+	                          className="absolute right-3 top-3 px-2 text-gray-500 hover:text-black"
+	                        >
+	                          ⋯
+	                        </button>
 
-          <div className="space-y-3">
-            {filteredMeetings
-  .map((meeting) => (
-              <div key={meeting.id} className="relative border rounded-lg p-4 pr-12">
-                <button
-                  type="button"
-                  data-menu-trigger
-                  aria-label={`Ouvrir le menu de la réunion ${meeting.title}`}
-                  aria-expanded={openMeetingMenuId === meeting.id}
-                  onClick={(e) => {
-                    e.stopPropagation();
+	                        {openFolderMenuId === folder.id && (
+	                          <div
+	                            data-menu-content
+	                            onClick={(e) => e.stopPropagation()}
+	                            className="absolute right-3 top-10 z-50 min-w-[190px] overflow-hidden rounded border bg-white shadow-lg"
+	                          >
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                closeAllMenus();
+	                                openRenameFolderModal(folder);
+	                              }}
+	                              className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+	                            >
+	                              Renommer le dossier
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                closeAllMenus();
+	                                openAddMeetingsToFolderModal(folder);
+	                              }}
+	                              className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+	                            >
+	                              Ajouter des réunions
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                closeAllMenus();
+	                                openRemoveMeetingsFromFolderModal(folder);
+	                              }}
+	                              className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
+	                            >
+	                              Retirer des réunions
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={(e) => {
+	                                e.stopPropagation();
+	                                deleteFolder(folder);
+	                              }}
+	                              className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100"
+	                            >
+	                              Supprimer le dossier
+	                            </button>
+	                          </div>
+	                        )}
+	                      </div>
 
-                    const shouldOpenMenu = openMeetingMenuId !== meeting.id;
+	                      {isExpanded && (
+	                        <div className="space-y-3 border-t bg-gray-50 p-3">
+	                          {folderMeetings.length === 0 ? (
+	                            <p className="text-sm text-gray-600">
+	                              Aucune réunion dans ce dossier.
+	                            </p>
+	                          ) : (
+	                            folderMeetings.map((meeting) =>
+	                              renderHistoryMeetingCard(meeting)
+	                            )
+	                          )}
+	                        </div>
+	                      )}
+	                    </div>
+	                  );
+	                })}
 
-                    closeAllMenus();
-
-                    if (shouldOpenMenu) {
-                      setOpenMeetingMenuId(meeting.id);
-                    }
-                  }}
-                  className="absolute top-3 right-3 px-2 text-gray-500 hover:text-black"
-                >
-                  ⋯
-                </button>
-
-                {openMeetingMenuId === meeting.id && (
-                  <div
-                    data-menu-content
-                    onClick={(e) => e.stopPropagation()}
-                    className="absolute right-3 top-10 z-50 min-w-[180px] overflow-hidden rounded border bg-white shadow-lg"
-                  >
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeAllMenus();
-                        openHistoryMeetingInline(meeting);
-                      }}
-                      className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
-                    >
-                      Ouvrir
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeAllMenus();
-                        downloadMeetingPDF(meeting);
-                      }}
-                      className="block w-full px-3 py-2 text-left text-sm hover:bg-gray-100"
-                    >
-                      PDF
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeAllMenus();
-                        deleteMeeting(meeting.id);
-                      }}
-                      className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100"
-                    >
-                      Supprimer
-                    </button>
-                  </div>
-                )}
-
-                <p className="font-semibold">{meeting.title}</p>
-                <p className="text-sm text-gray-500">
-                  {new Date(meeting.created_at).toLocaleString("fr-FR")}
-                </p>
-                <p className="text-sm text-gray-500">{meeting.file_name}</p>
-
-                <div className="flex gap-3 mt-3">
-                  <button
-                    onClick={() => {
-                      closeAllMenus();
-                      openHistoryMeetingInline(meeting);
-                    }}
-                    className="px-3 py-1 bg-black text-white rounded text-sm"
-                  >
-                    Ouvrir
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      closeAllMenus();
-                      downloadMeetingPDF(meeting);
-                    }}
-                    className="px-3 py-1 border rounded text-sm"
-                  >
-                    PDF
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      closeAllMenus();
-                      deleteMeeting(meeting.id);
-                    }}
-                    className="px-3 py-1 bg-red-600 text-white rounded text-sm"
-                  >
-                    Supprimer
-                  </button>
-                </div>
-
-                {openedHistoryMeetingId === meeting.id && (
-                  <div className="mt-4 rounded border bg-gray-50 p-4">
-                    <div className="mb-4 flex items-start justify-between gap-4">
-                      <div>
-                        <h3 className="text-xl font-bold">{historyTitle}</h3>
-                        {historyDate && (
-                          <p className="text-sm text-gray-500">
-                            {historyDate}
-                          </p>
-                        )}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={closeHistoryMeetingInline}
-                        className="rounded border px-3 py-1 text-sm"
-                      >
-                        Fermer
-                      </button>
-                    </div>
-
-                    <div className="mb-4 flex flex-wrap gap-3">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditedHistoryReport(historyMessage);
-                          setIsEditingHistory(true);
-                        }}
-                        className="rounded border px-3 py-1 text-sm"
-                      >
-                        Modifier
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={downloadHistoryReportPDF}
-                        className="rounded border px-3 py-1 text-sm"
-                      >
-                        PDF
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={openHistoryBulkTasksModal}
-                        className="rounded border px-3 py-1 text-sm"
-                      >
-                        Envoyer toutes les tâches
-                      </button>
-                    </div>
-
-                    {historyParticipants.length > 0 && (
-                      <div className="mb-4 rounded border bg-white p-3">
-                        <p className="mb-2 font-semibold">
-                          Participants présents :
-                        </p>
-                        <ul className="list-inside list-disc text-sm text-gray-700">
-                          {historyParticipants.map((participant) => (
-                            <li key={participant.id}>
-                              {participant.name}
-                              {participant.role ? ` (${participant.role})` : ""}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {isEditingHistory ? (
-                      <div>
-                        <textarea
-                          value={editedHistoryReport}
-                          onChange={(e) => setEditedHistoryReport(e.target.value)}
-                          className="min-h-[300px] w-full rounded border p-3"
-                        />
-
-                        <div className="mt-3 flex gap-3">
-                          <button
-                            type="button"
-                            onClick={saveEditedHistoryReport}
-                            className="rounded bg-black px-4 py-2 text-white"
-                          >
-                            Enregistrer
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditedHistoryReport("");
-                              setIsEditingHistory(false);
-                            }}
-                            className="rounded border px-4 py-2"
-                          >
-                            Annuler
-                          </button>
-                        </div>
-                      </div>
-	                    ) : (
-	                      renderReportContent(historyMessage)
-	                    )}
-
-                    {historyTasks.length > 0 && (
-                      <div className="mt-4 rounded border bg-white p-3">
-                        <h4 className="mb-2 font-semibold">Tâches</h4>
-                        <div className="space-y-2">
-                          {historyTasks.map((task) => {
-	                            const isCompleted =
-	                              normalizeTaskStatus(task.status) === "Fait";
-
-                            return (
-	                              <div
-	                                key={task.id}
-	                                className={`relative rounded border p-2 pr-12 ${getTaskDueDateClass(
-	                                  task
-	                                )}`}
-	                              >
-	                                {renderTaskMenu(task)}
-
-	                                <div className="flex flex-wrap items-start justify-between gap-2">
-                                  <p
-                                    className={`font-medium ${
-                                      isCompleted ? "text-green-800" : ""
-                                    }`}
-                                  >
-                                    {task.action}
-                                  </p>
-
-	                                  {renderTaskStatusBadge(task, "mt-0")}
-	                                </div>
-
-                                <p className="text-sm text-gray-600">
-                                  Responsable :{" "}
-                                  {task.responsible || "Non attribué"}
-                                </p>
-                                <p className="text-sm text-gray-600">
-                                  Échéance : {task.due_date || "Non renseignée"}
-                                </p>
-	                                {isCompleted && task.completed_at && (
-	                                  <p className="text-sm text-green-700">
-	                                    Terminé le :{" "}
-	                                    {formatCompletedAt(task.completed_at)}
-	                                  </p>
-	                                )}
-	                              </div>
-	                            );
-	                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+	                {unfiledMeetings.map((meeting) =>
+	                  renderHistoryMeetingCard(meeting)
+	                )}
+	              </>
+	            )}
+	          </div>
             </>
           )}
         </section>
+	      )}
+{showFolderModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-lg bg-white p-6">
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">
+            {folderModalMode === "create" && "Nouveau dossier de réunions"}
+            {folderModalMode === "rename" && "Renommer le dossier"}
+            {folderModalMode === "add" && "Ajouter des réunions"}
+            {folderModalMode === "remove" && "Retirer des réunions"}
+          </h2>
+          {activeFolder && (
+            <p className="text-sm text-gray-600">📁 {activeFolder.name}</p>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={closeFolderModal}
+          className="rounded border px-3 py-1"
+        >
+          Fermer
+        </button>
+      </div>
+
+      {(folderModalMode === "create" || folderModalMode === "rename") && (
+        <label className="block text-sm font-medium">
+          Nom du dossier
+          <input
+            type="text"
+            value={folderName}
+            onChange={(e) => setFolderName(e.target.value)}
+            className="mt-2 w-full rounded border px-3 py-2"
+            placeholder="Ex. Client Renault"
+          />
+        </label>
       )}
-{showBulkTasksModal && (
+
+      {folderModalMode !== "rename" && (
+        <div className="mt-5">
+          <p className="mb-3 font-semibold">
+            {folderModalMode === "remove"
+              ? "Réunions à retirer"
+              : "Réunions à regrouper"}
+          </p>
+
+          {folderModalMeetings.length === 0 ? (
+            <p className="rounded border bg-gray-50 p-3 text-sm text-gray-600">
+              Aucune réunion disponible.
+            </p>
+          ) : (
+            <div className="max-h-72 space-y-2 overflow-auto rounded border p-3">
+              {folderModalMeetings.map((meeting) => (
+                <label
+                  key={meeting.id}
+                  className="flex items-start gap-2 rounded p-2 text-sm hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedFolderMeetingIds.includes(meeting.id)}
+                    onChange={() => {
+                      setSelectedFolderMeetingIds((currentIds) =>
+                        currentIds.includes(meeting.id)
+                          ? currentIds.filter((id) => id !== meeting.id)
+                          : [...currentIds, meeting.id]
+                      );
+                    }}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="font-medium">{meeting.title}</span>
+                    <span className="block text-gray-500">
+                      {new Date(meeting.created_at).toLocaleString("fr-FR")}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {folderStatus && (
+        <p className="mt-4 rounded border bg-gray-50 p-3 text-sm text-gray-700">
+          {folderStatus}
+        </p>
+      )}
+
+      <div className="mt-6 flex justify-end gap-3">
+        <button
+          type="button"
+          onClick={closeFolderModal}
+          className="rounded border px-4 py-2"
+        >
+          Annuler
+        </button>
+
+        <button
+          type="button"
+          onClick={submitFolderModal}
+          className="rounded bg-black px-4 py-2 text-white"
+        >
+          {folderModalMode === "create" && "Créer le dossier"}
+          {folderModalMode === "rename" && "Renommer"}
+          {folderModalMode === "add" && "Ajouter"}
+          {folderModalMode === "remove" && "Retirer"}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+	{showBulkTasksModal && (
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
     <div className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-lg bg-white p-6">
       <div className="mb-4 flex items-center justify-between gap-4">
@@ -3778,13 +5416,117 @@ closeAllMenus();
     </div>
   </div>
 )}
+{showInviteParticipantsModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-lg bg-white p-6">
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold">Inviter des collaborateurs</h2>
+          <p className="text-sm text-gray-600">
+            Simulation prête pour de futurs liens d’invitation et la présence temps réel.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowInviteParticipantsModal(false)}
+          className="rounded border px-3 py-1"
+        >
+          Fermer
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {employees.length === 0 ? (
+          <p className="text-sm text-gray-600">
+            Aucun collaborateur disponible.
+          </p>
+        ) : (
+          employees.map((employee) => {
+            const isInvited = invitedLiveParticipantIds.includes(employee.id);
+            const isConnected = connectedLiveParticipantIds.includes(employee.id);
+
+            return (
+              <div
+                key={employee.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded border p-3 text-sm"
+              >
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={pendingInviteEmployeeIds.includes(employee.id)}
+                    disabled={isConnected}
+                    onChange={() => {
+                      if (pendingInviteEmployeeIds.includes(employee.id)) {
+                        setPendingInviteEmployeeIds((currentIds) =>
+                          currentIds.filter((currentId) => currentId !== employee.id)
+                        );
+                      } else {
+                        setPendingInviteEmployeeIds((currentIds) => [
+                          ...new Set([...currentIds, employee.id]),
+                        ]);
+                      }
+                    }}
+                  />
+
+                  <span>
+                    {employee.name}
+                    {employee.role ? ` (${employee.role})` : ""}
+                  </span>
+                </label>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-600">
+                    {isConnected
+                      ? "Connecté"
+                      : isInvited
+                        ? "Invité"
+                        : "Non invité"}
+                  </span>
+
+                  {!isConnected && (
+                    <button
+                      type="button"
+                      onClick={() => markLiveParticipantAsJoined(employee.id)}
+                      className="rounded border px-2 py-1 text-xs"
+                    >
+                      Marquer comme rejoint
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <div className="mt-6 flex justify-end gap-3">
+        <button
+          type="button"
+          onClick={() => setShowInviteParticipantsModal(false)}
+          className="rounded border px-4 py-2"
+        >
+          Annuler
+        </button>
+
+        <button
+          type="button"
+          onClick={() => inviteLiveParticipants(pendingInviteEmployeeIds)}
+          className="rounded bg-black px-4 py-2 text-white"
+        >
+          Inviter la sélection
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 {showParticipantsModal && (
   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
     <div className="w-full max-w-2xl rounded-lg bg-white p-6">
       <div className="mb-4 flex items-center justify-between gap-4">
-        <h2 className="text-2xl font-bold">
-          Quels collaborateurs étaient présents ?
-        </h2>
+	        <h2 className="text-2xl font-bold">
+	          Quels collaborateurs étaient présents ?
+	        </h2>
 
         <button
           type="button"
@@ -3793,9 +5535,19 @@ closeAllMenus();
         >
           Fermer
         </button>
-      </div>
+	      </div>
 
-      <input
+	      {connectedLiveParticipantIds.length > 0 ? (
+	        <p className="mb-4 rounded border bg-green-50 p-3 text-sm text-green-700">
+	          Les participants connectés ont été présélectionnés automatiquement.
+	        </p>
+	      ) : (
+	        <p className="mb-4 rounded border bg-gray-50 p-3 text-sm text-gray-600">
+	          Aucun participant connecté. Tu peux générer sans participant ou en sélectionner manuellement.
+	        </p>
+	      )}
+	
+	      <input
         type="text"
         placeholder="🔍 Rechercher un collaborateur..."
         value={participantSearch}
@@ -3918,6 +5670,188 @@ closeAllMenus();
         <button
           onClick={() => setShowEmailModal(false)}
           className="px-4 py-2 border rounded"
+        >
+          Annuler
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+{showSendReportModal && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-xl bg-white p-6 shadow-xl">
+      {(() => {
+        const reportParticipants =
+          sendReportContext === "current"
+            ? currentParticipants
+            : historyParticipants;
+        const participantIds = new Set(
+          reportParticipants.map((participant) => participant.id)
+        );
+        const otherEmployees = employees.filter(
+          (employee) => !participantIds.has(employee.id)
+        );
+        const renderRecipient = (employee: Employee, isParticipant: boolean) => (
+          <label
+            key={employee.id}
+            className="flex items-start gap-3 rounded border border-gray-200 bg-gray-50 p-3 text-sm"
+          >
+            <input
+              type="checkbox"
+              checked={emailRecipients.includes(employee.id)}
+              onChange={() => {
+                setEmailRecipients((currentRecipients) =>
+                  currentRecipients.includes(employee.id)
+                    ? currentRecipients.filter((id) => id !== employee.id)
+                    : [...currentRecipients, employee.id]
+                );
+              }}
+              className="mt-1"
+            />
+            <span>
+              <span className="block font-medium text-gray-950">
+                {employee.name}
+                {isParticipant ? " · participant" : ""}
+              </span>
+              <span className="block text-gray-600">
+                {employee.email || "Email manquant"}
+              </span>
+              {employee.role && (
+                <span className="block text-gray-500">{employee.role}</span>
+              )}
+            </span>
+          </label>
+        );
+
+        return (
+          <>
+            <div className="mb-5 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold">Envoyer le compte rendu</h2>
+                <p className="mt-1 text-sm text-gray-600">
+                  Les participants présents sont présélectionnés.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSendReportModal(false)}
+                className="rounded border px-3 py-1 text-sm"
+              >
+                Fermer
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="rounded-lg border border-gray-200 bg-white">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setIsSendParticipantsOpen((currentIsOpen) => !currentIsOpen)
+                  }
+                  className="flex w-full items-center justify-between px-4 py-3 text-left font-semibold"
+                >
+                  <span>
+                    Participants présents ({reportParticipants.length})
+                  </span>
+                  <span className="text-gray-500">
+                    {isSendParticipantsOpen ? "▼" : "▶"}
+                  </span>
+                </button>
+                {isSendParticipantsOpen && (
+                <div className="space-y-2 border-t border-gray-100 p-3">
+                  {reportParticipants.length > 0 ? (
+                    reportParticipants.map((employee) =>
+                      renderRecipient(employee, true)
+                    )
+                  ) : (
+                    <p className="rounded border bg-gray-50 p-3 text-sm text-gray-600">
+                      Aucun participant renseigné.
+                    </p>
+                  )}
+                </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-gray-200 bg-white">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setIsSendOthersOpen((currentIsOpen) => !currentIsOpen)
+                  }
+                  className="flex w-full items-center justify-between px-4 py-3 text-left font-semibold"
+                >
+                  <span>Autres collaborateurs ({otherEmployees.length})</span>
+                  <span className="text-gray-500">
+                    {isSendOthersOpen ? "▼" : "▶"}
+                  </span>
+                </button>
+                {isSendOthersOpen && (
+                <div className="space-y-2 border-t border-gray-100 p-3">
+                  {otherEmployees.length > 0 ? (
+                    otherEmployees.map((employee) =>
+                      renderRecipient(employee, false)
+                    )
+                  ) : (
+                    <p className="rounded border bg-gray-50 p-3 text-sm text-gray-600">
+                      Aucun autre collaborateur.
+                    </p>
+                  )}
+                </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowSendReportModal(false)}
+                className="rounded border px-4 py-2"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={confirmSendReportModal}
+                className="rounded bg-black px-4 py-2 font-semibold text-white"
+              >
+                Envoyer
+              </button>
+            </div>
+          </>
+        );
+      })()}
+    </div>
+  </div>
+)}
+{pendingCloseTarget && (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+      <h2 className="text-xl font-bold">
+        Modifications non enregistrées
+      </h2>
+      <p className="mt-2 text-sm text-gray-600">
+        Vous avez des modifications non enregistrées. Voulez-vous les enregistrer avant de quitter ?
+      </p>
+
+      <div className="mt-6 flex flex-wrap justify-end gap-3">
+        <button
+          type="button"
+          onClick={saveBeforeClosing}
+          className="rounded bg-black px-4 py-2 text-sm font-semibold text-white"
+        >
+          Enregistrer
+        </button>
+        <button
+          type="button"
+          onClick={ignoreChangesAndClose}
+          className="rounded border px-4 py-2 text-sm"
+        >
+          Ignorer
+        </button>
+        <button
+          type="button"
+          onClick={() => setPendingCloseTarget(null)}
+          className="rounded border px-4 py-2 text-sm"
         >
           Annuler
         </button>
@@ -4051,13 +5985,20 @@ closeAllMenus();
       </button>
       {showEmployeeModal && (
   <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-    <div className="bg-white p-6 rounded-lg shadow-lg w-full max-w-md">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        saveEmployeeForm();
+      }}
+      className="bg-white p-6 rounded-lg shadow-lg w-full max-w-md"
+    >
       <h2 className="text-xl font-bold mb-4">
         {editingEmployee ? "Modifier le collaborateur" : "Ajouter un collaborateur"}
       </h2>
 
       <div className="space-y-3">
         <input
+          ref={employeeNameInputRef}
           type="text"
           placeholder="Nom"
           value={employeeForm.name}
@@ -4085,7 +6026,7 @@ closeAllMenus();
 
         <input
           type="text"
-          placeholder="Poste / Fonction"
+          placeholder="Poste / Entreprise"
           value={employeeForm.role}
           onChange={(e) =>
             setEmployeeForm({
@@ -4107,14 +6048,13 @@ closeAllMenus();
         </button>
 
         <button
-          type="button"
-          onClick={saveEmployeeForm}
+          type="submit"
           className="px-4 py-2 bg-black text-white rounded"
         >
           Enregistrer
         </button>
       </div>
-    </div>
+    </form>
   </div>
 )}
     </main>
