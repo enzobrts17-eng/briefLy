@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import jsPDF from "jspdf";
+import type { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 
 type Meeting = {
@@ -76,8 +78,18 @@ type DashboardSelection =
   | null;
 
 const GENERATING_REPORT_MESSAGE = "Génération du compte rendu en cours...";
+type AuthMode = "login" | "signup";
 
 export default function Home() {
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authFullName, setAuthFullName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authStatus, setAuthStatus] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
   const [editedReport, setEditedReport] = useState("");
@@ -118,6 +130,7 @@ const [sendReportContext, setSendReportContext] = useState<
 const [isSendParticipantsOpen, setIsSendParticipantsOpen] = useState(false);
 const [isSendOthersOpen, setIsSendOthersOpen] = useState(false);
 const [copiedNotice, setCopiedNotice] = useState("");
+const [copiedSectionLabel, setCopiedSectionLabel] = useState("");
 const [openReportSections, setOpenReportSections] = useState<
   Record<string, boolean>
 >({});
@@ -167,6 +180,8 @@ const [reminderStatus, setReminderStatus] = useState("");
   const [openedHistoryMeetingId, setOpenedHistoryMeetingId] = useState<
     number | null
   >(null);
+  const [historyReturnSection, setHistoryReturnSection] =
+    useState<AppSection | null>(null);
   const [historyTitle, setHistoryTitle] = useState("");
   const [historyDate, setHistoryDate] = useState("");
   const [historyMessage, setHistoryMessage] = useState("");
@@ -183,6 +198,12 @@ const [reminderStatus, setReminderStatus] = useState("");
     useState(false);
   const [isHistoryTasksOpen, setIsHistoryTasksOpen] = useState(false);
   const [historyScrollBeforeOpen, setHistoryScrollBeforeOpen] = useState(0);
+  const [highlightedDashboardTaskId, setHighlightedDashboardTaskId] = useState<
+    number | null
+  >(null);
+  const [focusedDashboardTaskId, setFocusedDashboardTaskId] = useState<
+    number | null
+  >(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -233,13 +254,51 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+
+    async function loadAuthSession() {
+      const {
+        data: { session },
+        error,
+      } = await supabase.auth.getSession();
+
+      if (error) {
+        console.error(error);
+      }
+
+      if (isMounted) {
+        setAuthUser(session?.user || null);
+        setIsAuthLoading(false);
+      }
+    }
+
+    loadAuthSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user || null);
+      setIsAuthLoading(false);
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authUser) {
+      return;
+    }
+
     loadMeetings();
     loadDeletedMeetings();
 	    loadMeetingFolders();
 	    loadEmployees();
 	    loadMeetingParticipantIndex();
 	    loadDashboardTasks();
-	  }, []);
+	  }, [authUser]);
 
   useEffect(() => {
     if (!isRecording || !liveMeetingStartedAt) {
@@ -378,6 +437,102 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     showSendReportModal,
     showTrash,
   ]);
+
+  async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthError("");
+    setAuthStatus("");
+
+    const email = authEmail.trim();
+    const password = authPassword.trim();
+    const fullName = authFullName.trim();
+
+    if (!email || !password || (authMode === "signup" && !fullName)) {
+      setAuthError("Tous les champs obligatoires doivent être renseignés.");
+      return;
+    }
+
+    setIsAuthSubmitting(true);
+
+    try {
+      if (authMode === "login") {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+
+        if (error) {
+          setAuthError(error.message);
+          return;
+        }
+
+        setAuthStatus("Connexion réussie.");
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName,
+          },
+        },
+      });
+
+      if (error) {
+        setAuthError(error.message);
+        return;
+      }
+
+      if (data.user) {
+        const { error: profileError } = await supabase.from("profiles").upsert({
+          id: data.user.id,
+          full_name: fullName,
+          email,
+        });
+
+        if (profileError) {
+          console.error("Erreur création profil:", profileError);
+          setAuthStatus(
+            "Compte créé. Le profil sera finalisé après application du SQL profiles."
+          );
+        } else {
+          setAuthStatus(
+            data.session
+              ? "Compte créé. Bienvenue dans Briefly."
+              : "Compte créé. Vérifiez votre email si la confirmation est activée."
+          );
+        }
+      }
+
+      setAuthFullName("");
+      setAuthEmail("");
+      setAuthPassword("");
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  }
+
+  async function handleSignOut() {
+    closeAllMenus();
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    setAuthUser(null);
+    setMeetings([]);
+    setDeletedMeetings([]);
+    setMeetingFolders([]);
+    setEmployees([]);
+    setTasks([]);
+    setDashboardTasks([]);
+    resetCurrentReport();
+    closeHistoryMeetingInline({ restoreScroll: false, returnToSource: false });
+  }
 
   useEffect(() => {
     function handleDocumentClick(event: MouseEvent) {
@@ -2209,10 +2364,11 @@ function hasSensitiveInformation(report: string) {
   return [
     /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/i,
     /\bRIB\b/i,
-    /mot de passe|password|identifiant confidentiel/i,
-    /salaire|rémunération|bulletin de paie/i,
-    /donnée bancaire|carte bancaire|coordonnées bancaires/i,
-    /confidentiel|information personnelle|donnée personnelle/i,
+    /mot de passe|password|identifiant confidentiel|code confidentiel/i,
+    /salaire|rémunération|bulletin de paie|prime|bonus/i,
+    /donnée bancaire|carte bancaire|coordonnées bancaires|numéro de carte/i,
+    /confidentiel|secret|information personnelle|donnée personnelle/i,
+    /numéro de sécurité sociale|nss|données personnelles/i,
   ].some((pattern) => pattern.test(report));
 }
 
@@ -2220,13 +2376,18 @@ function copySectionContent(content: string, label: string) {
   navigator.clipboard
     ?.writeText(content)
     .then(() => {
-      setCopiedNotice(`✓ ${label} copié dans le presse-papiers`);
-      window.setTimeout(() => setCopiedNotice(""), 2200);
+      setCopiedNotice("✓ Copié");
+      setCopiedSectionLabel(label);
+      window.setTimeout(() => {
+        setCopiedNotice("");
+        setCopiedSectionLabel("");
+      }, 1000);
     })
     .catch((error) => {
       console.error(error);
       setCopiedNotice("Impossible de copier cette section.");
-      window.setTimeout(() => setCopiedNotice(""), 2200);
+      setCopiedSectionLabel("");
+      window.setTimeout(() => setCopiedNotice(""), 1000);
     });
 }
 
@@ -2235,6 +2396,84 @@ function toggleReportSection(sectionKey: string) {
     ...currentSections,
     [sectionKey]: !(currentSections[sectionKey] ?? true),
   }));
+}
+
+function canCopyReportSection(title: string | null) {
+  const normalizedTitle = (title || "").toLowerCase();
+
+  return [
+    "résumé exécutif",
+    "points clés",
+    "décisions prises",
+    "risques ou points à clarifier",
+  ].some((sectionTitle) => normalizedTitle.includes(sectionTitle));
+}
+
+function renderHighlightedText(text: string, query: string) {
+  const trimmedQuery = query.trim();
+
+  if (!trimmedQuery) {
+    return text;
+  }
+
+  const escapedQuery = trimmedQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = text.split(new RegExp(`(${escapedQuery})`, "gi"));
+
+  return parts.map((part, index) =>
+    part.toLowerCase() === trimmedQuery.toLowerCase() ? (
+      <mark
+        key={`${part}-${index}`}
+        className="rounded bg-yellow-100 px-0.5 text-gray-950"
+      >
+        {part}
+      </mark>
+    ) : (
+      <span key={`${part}-${index}`}>{part}</span>
+    )
+  );
+}
+
+function getDashboardSelectionForTask(task: Task): Exclude<DashboardSelection, "meetings" | null> {
+  const { overdueTasks } = getUrgentTasks([task]);
+
+  if (overdueTasks.length > 0) {
+    return "overdue";
+  }
+
+  const taskStatus = normalizeTaskStatus(task.status);
+
+  if (taskStatus === "En cours") {
+    return "progress";
+  }
+
+  if (taskStatus === "Fait") {
+    return "done";
+  }
+
+  return "todo";
+}
+
+function focusDashboardTask(task: Task) {
+  setDashboardSelection(getDashboardSelectionForTask(task));
+  setFocusedDashboardTaskId(task.id);
+  setHighlightedDashboardTaskId(task.id);
+
+  window.setTimeout(() => {
+    document
+      .getElementById("dashboard-selection-panel")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 80);
+
+  window.setTimeout(() => {
+    setHighlightedDashboardTaskId((currentTaskId) =>
+      currentTaskId === task.id ? null : currentTaskId
+    );
+  }, 2100);
+}
+
+function clearDashboardSearchFocus() {
+  setFocusedDashboardTaskId(null);
+  setHighlightedDashboardTaskId(null);
 }
 
 function renderGenerationProgress() {
@@ -2310,12 +2549,12 @@ function renderReportContent(report: string) {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-5">
       {sections.map((section, index) =>
         section.title ? (
           <section
             key={`${section.title}-${index}`}
-            className="space-y-4"
+            className="group rounded-xl border border-gray-200 bg-gray-50/80 p-4 transition duration-200 hover:-translate-y-0.5 hover:border-gray-300 hover:bg-white hover:shadow-sm"
           >
             {(() => {
               const sectionKey = `${section.title}-${index}`;
@@ -2323,32 +2562,49 @@ function renderReportContent(report: string) {
                 section.content.join("\n").trim() ||
                 getEmptySectionMessage(section.title);
               const isOpen = openReportSections[sectionKey] ?? true;
+              const canCopy = canCopyReportSection(section.title);
+              const copyLabel =
+                copiedNotice === "✓ Copié" &&
+                copiedSectionLabel === section.title
+                  ? "✓ Copié"
+                  : "📋";
 
               return (
                 <>
-                  <div className="flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-4 py-2">
+                  <div className="flex items-center justify-between gap-3">
                     <button
                       type="button"
                       onClick={() => toggleReportSection(sectionKey)}
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm font-semibold text-gray-950"
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left text-sm font-semibold text-gray-950"
                     >
-                      <span className="text-gray-500">{isOpen ? "▼" : "▶"}</span>
+                      <span
+                        className="inline-block text-gray-500 transition-transform duration-200"
+                      >
+                        {isOpen ? "▼" : "▶"}
+                      </span>
                       <span>{section.title}</span>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        copySectionContent(sectionText, section.title || "Section")
-                      }
-                      className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:bg-gray-100"
-                    >
-                      📋 Copier
-                    </button>
+                    {canCopy && (
+                      <button
+                        type="button"
+                        title="Copier cette section"
+                        aria-label="Copier cette section"
+                        onClick={() =>
+                          copySectionContent(
+                            sectionText,
+                            section.title || "Section"
+                          )
+                        }
+                        className="rounded-full border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 opacity-0 shadow-sm transition duration-200 hover:bg-gray-100 group-hover:opacity-100"
+                      >
+                        {copyLabel}
+                      </button>
+                    )}
                   </div>
 
                   {isOpen && (
-                    <div className="whitespace-pre-wrap text-[15px] leading-7 text-gray-700">
+                    <div className="mt-4 whitespace-pre-wrap text-[15px] leading-7 text-gray-700">
                       {sectionText}
                     </div>
                   )}
@@ -3053,9 +3309,13 @@ async function loadHistoryMeetingParticipants(meetingId: number) {
   setHistoryParticipants(participants);
 }
 
-async function openHistoryMeetingInline(meeting: Meeting) {
+async function openHistoryMeetingInline(
+  meeting: Meeting,
+  returnSection: AppSection | null = null
+) {
   closeAllMenus();
   setHistoryScrollBeforeOpen(window.scrollY);
+  setHistoryReturnSection(returnSection);
   setOpenedHistoryMeetingId(meeting.id);
   setHistoryTitle(meeting.title);
   setHistoryDate(new Date(meeting.created_at).toLocaleString("fr-FR"));
@@ -3088,7 +3348,7 @@ async function openDashboardMeetingInHistory(meeting: Meeting) {
   }
 
   setActiveSection("history");
-  await openHistoryMeetingInline(meeting);
+  await openHistoryMeetingInline(meeting, "dashboard");
 
   window.setTimeout(() => {
     document
@@ -3097,8 +3357,14 @@ async function openDashboardMeetingInHistory(meeting: Meeting) {
   }, 120);
 }
 
-function closeHistoryMeetingInline() {
+function closeHistoryMeetingInline(
+  options: { restoreScroll?: boolean; returnToSource?: boolean } = {}
+) {
+  const { restoreScroll = true, returnToSource = true } = options;
+  const returnSection = returnToSource ? historyReturnSection : null;
+
   setOpenedHistoryMeetingId(null);
+  setHistoryReturnSection(null);
   setHistoryTitle("");
   setHistoryDate("");
   setHistoryMessage("");
@@ -3109,9 +3375,16 @@ function closeHistoryMeetingInline() {
   setEditedHistoryReport("");
   setIsHistoryParticipantsOpen(false);
   setIsHistoryTasksOpen(false);
-  window.setTimeout(() => {
-    window.scrollTo({ top: historyScrollBeforeOpen, behavior: "smooth" });
-  }, 0);
+  if (returnSection) {
+    setActiveSection(returnSection);
+    return;
+  }
+
+  if (restoreScroll) {
+    window.setTimeout(() => {
+      window.scrollTo({ top: historyScrollBeforeOpen, behavior: "smooth" });
+    }, 0);
+  }
 }
 
 function resetCurrentReport() {
@@ -3127,6 +3400,25 @@ function resetCurrentReport() {
   setIsEditing(false);
   setIsCurrentParticipantsOpen(false);
   setIsCurrentTasksOpen(false);
+}
+
+function resetTemporaryNavigationState() {
+  setDashboardSearch("");
+  setMeetingSearch("");
+  setEmployeeSearch("");
+  setParticipantSearch("");
+  clearDashboardSearchFocus();
+}
+
+function navigateToSection(section: AppSection) {
+  closeAllMenus();
+
+  if (activeSection === "history" && section !== "history" && openedHistoryMeetingId) {
+    closeHistoryMeetingInline({ restoreScroll: false, returnToSource: false });
+  }
+
+  resetTemporaryNavigationState();
+  setActiveSection(section);
 }
 
 function hasCurrentUnsavedChanges() {
@@ -3609,34 +3901,6 @@ const folderModalMeetings =
               >
                 <span>Tâches ({historyTasks.length})</span>
                 <span className="flex items-center gap-2">
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      copySectionContent(
-                        historyTasks.length > 0
-                          ? historyTasks.map((task) => task.action).join("\n")
-                          : "Aucune tâche n’a été identifiée.",
-                        "Tâches"
-                      );
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        copySectionContent(
-                          historyTasks.length > 0
-                            ? historyTasks.map((task) => task.action).join("\n")
-                            : "Aucune tâche n’a été identifiée.",
-                          "Tâches"
-                        );
-                      }
-                    }}
-                    className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600"
-                  >
-                    📋 Copier
-                  </span>
                   <span className="text-gray-500">
                     {isHistoryTasksOpen ? "▼" : "▶"}
                   </span>
@@ -3700,8 +3964,150 @@ const folderModalMeetings =
     );
   }
 
+  function renderAuthScreen() {
+    const isSignup = authMode === "signup";
+
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-10">
+        <section className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+          <div className="mb-8 text-center">
+            <h1 className="text-4xl font-bold text-gray-950">Briefly</h1>
+            <p className="mt-3 text-sm text-gray-600">
+              Connectez-vous pour accéder à votre espace.
+            </p>
+          </div>
+
+          <div className="mb-6 grid grid-cols-2 rounded-full bg-gray-100 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("login");
+                setAuthError("");
+                setAuthStatus("");
+              }}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                authMode === "login"
+                  ? "bg-black text-white"
+                  : "text-gray-700 hover:bg-white"
+              }`}
+            >
+              Connexion
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode("signup");
+                setAuthError("");
+                setAuthStatus("");
+              }}
+              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                authMode === "signup"
+                  ? "bg-black text-white"
+                  : "text-gray-700 hover:bg-white"
+              }`}
+            >
+              Inscription
+            </button>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            {isSignup && (
+              <label className="block text-sm font-medium text-gray-700">
+                Nom
+                <input
+                  type="text"
+                  value={authFullName}
+                  onChange={(e) => setAuthFullName(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                  placeholder="Votre nom"
+                  autoComplete="name"
+                />
+              </label>
+            )}
+
+            <label className="block text-sm font-medium text-gray-700">
+              Email
+              <input
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                placeholder="vous@entreprise.com"
+                autoComplete="email"
+              />
+            </label>
+
+            <label className="block text-sm font-medium text-gray-700">
+              Mot de passe
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                placeholder="••••••••"
+                autoComplete={isSignup ? "new-password" : "current-password"}
+              />
+            </label>
+
+            {authError && (
+              <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {authError}
+              </p>
+            )}
+
+            {authStatus && (
+              <p className="rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
+                {authStatus}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={isAuthSubmitting}
+              className="w-full rounded-xl bg-black px-4 py-3 font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
+            >
+              {isAuthSubmitting
+                ? "Patientez..."
+                : isSignup
+                  ? "Créer mon compte"
+                  : "Se connecter"}
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
+  if (isAuthLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+        <div className="rounded-2xl border border-gray-200 bg-white px-6 py-5 text-sm text-gray-600 shadow-sm">
+          Chargement de Briefly...
+        </div>
+      </main>
+    );
+  }
+
+  if (!authUser) {
+    return renderAuthScreen();
+  }
+
   return (
-    <main className="min-h-screen flex flex-col items-center p-8">
+    <main className="relative min-h-screen flex flex-col items-center p-8">
+      <div className="absolute right-4 top-4 flex flex-wrap items-center justify-end gap-3 rounded-full border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm">
+        <span className="max-w-[220px] truncate text-gray-600">
+          {authUser.email}
+        </span>
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="rounded-full bg-black px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-gray-800"
+        >
+          Déconnexion
+        </button>
+      </div>
+
       <h1 className="text-4xl font-bold mt-12 mb-6">Briefly</h1>
 
       <p className="mb-8 text-center">
@@ -3719,10 +4125,7 @@ const folderModalMeetings =
           <button
             key={section}
             type="button"
-            onClick={() => {
-              closeAllMenus();
-              setActiveSection(section as AppSection);
-            }}
+            onClick={() => navigateToSection(section as AppSection)}
 	            className={`rounded-full px-4 py-2 text-sm font-medium transition ${
 	              activeSection === section ? "bg-black text-white" : "text-gray-700 hover:bg-white"
 	            }`}
@@ -3797,6 +4200,14 @@ const folderModalMeetings =
 		                    : dashboardSelection === "overdue"
 		                      ? overdueTasks
 		                      : [];
+		            const visibleSelectedTasks = focusedDashboardTaskId
+		              ? selectedTasks.filter(
+		                  (task) => task.id === focusedDashboardTaskId
+		                )
+		              : selectedTasks;
+		            const isShowingFocusedDashboardTask =
+		              Boolean(focusedDashboardTaskId) &&
+		              visibleSelectedTasks.length > 0;
 		            const selectedTitle =
 		              statCards.find((card) => card.key === dashboardSelection)
 		                ?.label || "";
@@ -3851,9 +4262,10 @@ const folderModalMeetings =
 	                    <span className="font-medium">Période</span>
 	                    <select
 	                      value={dashboardPeriod}
-	                      onChange={(e) =>
-	                        setDashboardPeriod(e.target.value as DashboardPeriod)
-	                      }
+		                      onChange={(e) => {
+		                        clearDashboardSearchFocus();
+		                        setDashboardPeriod(e.target.value as DashboardPeriod);
+		                      }}
 	                      className="rounded border bg-white px-3 py-2"
 	                    >
 	                      <option value="week">Cette semaine</option>
@@ -3871,6 +4283,7 @@ const folderModalMeetings =
 		                  onChange={(e) => {
 		                    setDashboardSearch(e.target.value);
 		                    setDashboardSelection(null);
+		                    clearDashboardSearchFocus();
 		                  }}
 		                  placeholder="Rechercher un dossier, une réunion, une tâche, un collaborateur..."
 		                  className="mb-8 w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-lg shadow-sm outline-none transition focus:border-gray-400"
@@ -3881,11 +4294,12 @@ const folderModalMeetings =
 		                    <button
 		                      key={card.label}
 		                      type="button"
-		                      onClick={() =>
+		                      onClick={() => {
+		                        clearDashboardSearchFocus();
 		                        setDashboardSelection((currentSelection) =>
 		                          currentSelection === card.key ? null : card.key
-		                        )
-		                      }
+		                        );
+		                      }}
 		                      className={`rounded-xl border p-5 text-left transition hover:-translate-y-0.5 hover:shadow-sm ${
 		                        card.tone
 		                      } ${
@@ -3900,7 +4314,7 @@ const folderModalMeetings =
 		                  ))}
 		                </div>
 
-		                {dashboardSearchResults ? (
+		                {dashboardSearchResults && (
 		                  <div className="mt-8 space-y-6">
 		                    <div className="flex items-center justify-between gap-3">
 		                      <h3 className="text-lg font-bold">
@@ -3912,9 +4326,10 @@ const folderModalMeetings =
 		                    </div>
 
 		                    {dashboardSearchCount === 0 ? (
-		                      <p className="text-sm text-gray-600">
-		                        Aucun résultat trouvé.
-		                      </p>
+		                      <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 p-8 text-center text-sm text-gray-600">
+		                        <p className="text-2xl">🔍</p>
+		                        <p className="mt-2">Aucun résultat trouvé</p>
+		                      </div>
 		                    ) : (
 		                      <div className="grid gap-4 lg:grid-cols-2">
 		                        {dashboardSearchResults.folders.length > 0 && (
@@ -3922,8 +4337,11 @@ const folderModalMeetings =
 		                            <h4 className="mb-3 font-semibold">Dossiers</h4>
 		                            <div className="space-y-2">
 		                              {dashboardSearchResults.folders.map((folder) => (
-		                                <div key={folder.id} className="rounded bg-white p-3">
-		                                  📁 {folder.name}
+		                                <div
+		                                  key={folder.id}
+		                                  className="rounded-lg bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+		                                >
+		                                  📁 {renderHighlightedText(folder.name, dashboardSearch)}
 		                                </div>
 		                              ))}
 		                            </div>
@@ -3935,12 +4353,24 @@ const folderModalMeetings =
 		                            <h4 className="mb-3 font-semibold">Réunions</h4>
 		                            <div className="space-y-2">
 		                              {dashboardSearchResults.meetings.map((meeting) => (
-		                                <div key={meeting.id} className="rounded bg-white p-3">
-		                                  <p className="font-medium">{meeting.title}</p>
+		                                <button
+		                                  key={meeting.id}
+		                                  type="button"
+		                                  onClick={() =>
+		                                    openDashboardMeetingInHistory(meeting)
+		                                  }
+		                                  className="w-full cursor-pointer rounded-lg bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+		                                >
+		                                  <p className="font-medium">
+		                                    {renderHighlightedText(
+		                                      meeting.title,
+		                                      dashboardSearch
+		                                    )}
+		                                  </p>
 		                                  <p className="text-sm text-gray-500">
 		                                    {new Date(meeting.created_at).toLocaleString("fr-FR")}
 		                                  </p>
-		                                </div>
+		                                </button>
 		                              ))}
 		                            </div>
 		                          </div>
@@ -3951,12 +4381,26 @@ const folderModalMeetings =
 		                            <h4 className="mb-3 font-semibold">Tâches</h4>
 		                            <div className="space-y-2">
 		                              {dashboardSearchResults.tasks.map((task) => (
-		                                <div key={task.id} className="rounded bg-white p-3">
-		                                  <p className="font-medium">{task.action}</p>
-		                                  <p className="text-sm text-gray-600">
-		                                    Responsable : {task.responsible || "Non attribué"}
+		                                <button
+		                                  key={task.id}
+		                                  type="button"
+		                                  onClick={() => focusDashboardTask(task)}
+		                                  className="w-full cursor-pointer rounded-lg bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+		                                >
+		                                  <p className="font-medium">
+		                                    {renderHighlightedText(
+		                                      task.action,
+		                                      dashboardSearch
+		                                    )}
 		                                  </p>
-		                                </div>
+		                                  <p className="text-sm text-gray-600">
+		                                    Responsable :{" "}
+		                                    {renderHighlightedText(
+		                                      task.responsible || "Non attribué",
+		                                      dashboardSearch
+		                                    )}
+		                                  </p>
+		                                </button>
 		                              ))}
 		                            </div>
 		                          </div>
@@ -3967,10 +4411,21 @@ const folderModalMeetings =
 		                            <h4 className="mb-3 font-semibold">Collaborateurs</h4>
 		                            <div className="space-y-2">
 		                              {dashboardSearchResults.employees.map((employee) => (
-		                                <div key={employee.id} className="rounded bg-white p-3">
-		                                  <p className="font-medium">{employee.name}</p>
+		                                <div
+		                                  key={employee.id}
+		                                  className="rounded-lg bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+		                                >
+		                                  <p className="font-medium">
+		                                    {renderHighlightedText(
+		                                      employee.name,
+		                                      dashboardSearch
+		                                    )}
+		                                  </p>
 		                                  <p className="text-sm text-gray-500">
-		                                    {employee.role}
+		                                    {renderHighlightedText(
+		                                      employee.role,
+		                                      dashboardSearch
+		                                    )}
 		                                  </p>
 		                                </div>
 		                              ))}
@@ -3980,8 +4435,13 @@ const folderModalMeetings =
 		                      </div>
 		                    )}
 		                  </div>
-		                ) : dashboardSelection && (
-		                  <div className="mt-8 rounded-xl bg-white p-5 shadow-sm">
+		                )}
+
+		                {dashboardSelection && (
+		                  <div
+		                    id="dashboard-selection-panel"
+		                    className="mt-8 rounded-xl bg-white p-5 shadow-sm"
+		                  >
 		                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
 		                      <h3 className="text-lg font-bold">{selectedTitle}</h3>
 		                      {dashboardSelection === "overdue" && (
@@ -3994,6 +4454,21 @@ const folderModalMeetings =
 		                        </button>
 		                      )}
 		                    </div>
+
+		                    {isShowingFocusedDashboardTask && (
+		                      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+		                        <span>
+		                          Affichage d’une tâche issue de la recherche.
+		                        </span>
+		                        <button
+		                          type="button"
+		                          onClick={clearDashboardSearchFocus}
+		                          className="font-semibold text-gray-950 underline-offset-4 hover:underline"
+		                        >
+		                          ← Retour à toutes les tâches
+		                        </button>
+		                      </div>
+		                    )}
 
 		                    {dashboardSelection === "meetings" ? (
 		                      dashboardMeetings.length === 0 ? (
@@ -4021,16 +4496,21 @@ const folderModalMeetings =
 		                          ))}
 		                        </div>
 		                      )
-		                    ) : selectedTasks.length === 0 ? (
+		                    ) : visibleSelectedTasks.length === 0 ? (
 		                      <p className="text-sm text-gray-600">
 		                        Aucun élément à afficher.
 		                      </p>
 		                    ) : (
 		                      <div className="space-y-2">
-		                        {selectedTasks.map((task) => (
+		                        {visibleSelectedTasks.map((task) => (
 		                          <div
 		                            key={task.id}
-		                            className="rounded border bg-gray-50 p-3"
+		                            id={`dashboard-task-${task.id}`}
+		                            className={`rounded border p-3 transition duration-300 ${
+		                              highlightedDashboardTaskId === task.id
+		                                ? "border-yellow-300 bg-yellow-50 shadow-md"
+		                                : "bg-gray-50"
+		                            }`}
 		                          >
 		                            <div className="flex flex-wrap items-start justify-between gap-3">
 		                              <p className="font-semibold">{task.action}</p>
@@ -4666,34 +5146,6 @@ closeAllMenus();
     >
       <span id="actions-detectees">Tâches ({tasks.length})</span>
       <span className="flex items-center gap-2">
-        <span
-          role="button"
-          tabIndex={0}
-          onClick={(e) => {
-            e.stopPropagation();
-            copySectionContent(
-              tasks.length > 0
-                ? tasks.map((task) => task.action).join("\n")
-                : "Aucune tâche n’a été identifiée.",
-              "Tâches"
-            );
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              e.stopPropagation();
-              copySectionContent(
-                tasks.length > 0
-                  ? tasks.map((task) => task.action).join("\n")
-                  : "Aucune tâche n’a été identifiée.",
-                "Tâches"
-              );
-            }
-          }}
-          className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600"
-        >
-          📋 Copier
-        </span>
         <span className="text-gray-500">{isCurrentTasksOpen ? "▼" : "▶"}</span>
       </span>
     </button>

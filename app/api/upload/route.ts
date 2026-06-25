@@ -4,6 +4,217 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+type GeneratedTask = {
+  action: string;
+  responsible: string | null;
+  responsible_employee_id: number | null;
+  due_date: string | null;
+};
+
+type ReportSection = {
+  title: string;
+  content: string[];
+};
+
+function cleanText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dedupeLines(lines: string[]) {
+  const seen = new Set<string>();
+
+  return lines.filter((line, index) => {
+    const trimmedLine = line.trim();
+
+    if (!trimmedLine) {
+      return Boolean(index > 0 && lines[index - 1]?.trim());
+    }
+
+    const normalizedLine = normalizeText(
+      trimmedLine.replace(/^[-*•]\s*/, "")
+    );
+
+    if (!normalizedLine) {
+      return false;
+    }
+
+    if (seen.has(normalizedLine)) {
+      return false;
+    }
+
+    seen.add(normalizedLine);
+    return true;
+  });
+}
+
+function isTaskSection(title: string) {
+  const normalizedTitle = normalizeText(title);
+
+  return (
+    normalizedTitle.includes("tache") ||
+    normalizedTitle.includes("action a realiser") ||
+    normalizedTitle.includes("actions a realiser")
+  );
+}
+
+function sanitizeReport(report: unknown) {
+  const rawReport = cleanText(report);
+
+  if (!rawReport) {
+    return "# Résumé exécutif\nAucun élément exploitable n’a été identifié dans la transcription.";
+  }
+
+  const sections: ReportSection[] = [];
+  let currentTitle = "Résumé exécutif";
+  let currentContent: string[] = [];
+
+  rawReport.split("\n").forEach((line) => {
+    const headingMatch = line.match(/^#\s+(.+)$/);
+
+    if (headingMatch) {
+      if (currentContent.join("").trim()) {
+        sections.push({
+          title: currentTitle,
+          content: currentContent,
+        });
+      }
+
+      currentTitle = headingMatch[1].trim();
+      currentContent = [];
+      return;
+    }
+
+    currentContent.push(line);
+  });
+
+  if (currentContent.join("").trim()) {
+    sections.push({
+      title: currentTitle,
+      content: currentContent,
+    });
+  }
+
+  const cleanedSections = sections
+    .map((section) => ({
+      title: section.title,
+      content: dedupeLines(section.content).join("\n").trim(),
+    }))
+    .filter((section) => {
+      return section.title && section.content && !isTaskSection(section.title);
+    });
+
+  if (cleanedSections.length === 0) {
+    return "# Résumé exécutif\nAucun élément exploitable n’a été identifié dans la transcription.";
+  }
+
+  const hasExecutiveSummary = cleanedSections.some((section) =>
+    normalizeText(section.title).includes("resume executif")
+  );
+
+  const firstSection = cleanedSections[0];
+  const normalizedSections = hasExecutiveSummary
+    ? cleanedSections
+    : [
+        {
+          title: "Résumé exécutif",
+          content: firstSection.content,
+        },
+        ...cleanedSections.slice(1),
+      ];
+
+  return normalizedSections
+    .map((section) => `# ${section.title}\n${section.content}`)
+    .join("\n\n")
+    .trim();
+}
+
+function sanitizeDueDate(value: unknown) {
+  const dueDate = cleanText(value);
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(dueDate) ? dueDate : null;
+}
+
+function sanitizeEmployeeId(value: unknown) {
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return Number(value);
+  }
+
+  return null;
+}
+
+function sanitizeTasks(tasks: unknown): GeneratedTask[] {
+  if (!Array.isArray(tasks)) {
+    return [];
+  }
+
+  const seenTasks = new Set<string>();
+
+  return tasks
+    .map((task) => {
+      if (!task || typeof task !== "object") {
+        return null;
+      }
+
+      const taskRecord = task as Record<string, unknown>;
+      const action = cleanText(taskRecord.action);
+
+      if (!action) {
+        return null;
+      }
+
+      const responsible = cleanText(taskRecord.responsible) || null;
+      const responsibleEmployeeId = sanitizeEmployeeId(
+        taskRecord.responsible_employee_id
+      );
+      const dueDate = sanitizeDueDate(taskRecord.due_date);
+      const taskKey = [
+        normalizeText(action),
+        responsibleEmployeeId ?? normalizeText(responsible || ""),
+        dueDate || "",
+      ].join("|");
+
+      if (seenTasks.has(taskKey)) {
+        return null;
+      }
+
+      seenTasks.add(taskKey);
+
+      return {
+        action,
+        responsible,
+        responsible_employee_id: responsibleEmployeeId,
+        due_date: dueDate,
+      };
+    })
+    .filter((task): task is GeneratedTask => Boolean(task));
+}
+
+function sanitizeTitle(title: unknown) {
+  const cleanedTitle = cleanText(title)
+    .replace(/^#+\s*/, "")
+    .replace(/\s+/g, " ");
+
+  if (!cleanedTitle) {
+    return "Réunion sans titre";
+  }
+
+  return cleanedTitle.split(" ").slice(0, 8).join(" ");
+}
+
 export async function POST(request: Request) {
   try {
     const formData = await request.formData();
@@ -12,9 +223,7 @@ export async function POST(request: Request) {
     const participants = formData.get("participants");
     const employeesRaw = formData.get("employees") as string | null;
 
-const employees = employeesRaw
-  ? JSON.parse(employeesRaw)
-  : [];
+    const employees = employeesRaw ? JSON.parse(employeesRaw) : [];
 
     if (!(file instanceof File)) {
       return Response.json(
@@ -67,6 +276,10 @@ Priorité absolue : fidélité à la transcription.
 Tu ne dois jamais inventer, compléter, extrapoler ou supposer une information absente.
 Si un sujet n'a pas été évoqué, ne crée pas de contenu artificiel. Omet la section correspondante, ou écris explicitement "Aucun élément n'a été évoqué durant la réunion" uniquement si cette précision aide la lecture.
 
+Objectif qualitatif : écrire comme un assistant de direction expérimenté.
+Le compte rendu ne doit pas être plus long que nécessaire : il doit être plus clair, plus fiable et immédiatement exploitable.
+Avant de rédiger, identifie mentalement le sujet principal, l'objectif de la réunion, les décisions, désaccords, actions, responsabilités, échéances et ambiguïtés. Ne restitue que les éléments réellement présents dans la transcription.
+
 Analyse la transcription et retourne uniquement un JSON valide avec cette structure exacte :
 
 {
@@ -84,9 +297,11 @@ Analyse la transcription et retourne uniquement un JSON valide avec cette struct
 
 Règles de rédaction du compte rendu :
 - Le titre contient moins de 8 mots et reste fidèle au sujet réellement évoqué.
-- Le compte rendu est en français professionnel, naturel et lisible.
+- Le compte rendu est en français professionnel, naturel, lisible et sobre.
 - Préfère des formulations comme "Cette réunion avait pour objectif..." ou "Les échanges ont principalement porté sur..." quand cela correspond à la transcription.
-- Le résumé exécutif doit synthétiser les informations réellement discutées.
+- Le résumé exécutif doit répondre clairement à : pourquoi cette réunion, ce qui a été décidé, et ce qu'il faut retenir.
+- Rédige le résumé exécutif comme une synthèse de cabinet de conseil : quelques paragraphes courts, aucune phrase creuse, aucun remplissage.
+- Hiérarchise les informations : décisions, actions et échéances d'abord ; détails secondaires ensuite.
 - Retourne le compte rendu en Markdown.
 - Utilise "# Résumé exécutif" dans tous les cas.
 - Ajoute uniquement les sections utiles parmi : "# Points clés", "# Décisions prises", "# Risques ou points à clarifier", "# Questions ouvertes", "# Prochaines étapes".
@@ -94,11 +309,18 @@ Règles de rédaction du compte rendu :
 - Ne jamais inclure une section "Actions à réaliser" dans le compte rendu : les tâches sont affichées séparément dans l'application.
 - Ne répète pas les tâches mot pour mot dans le compte rendu.
 - Pour les décisions, risques, budget, blocages, questions ouvertes et prochaines étapes : mentionne seulement ce qui a réellement été évoqué.
+- Si aucune décision claire n'a été prise, n'invente pas de décision. Si cela améliore la compréhension, écris : "Aucune décision claire n’a été prise pendant cette réunion."
+- Si aucun risque n'a été évoqué, n'écris pas "Aucun risque majeur n’a été identifié" sauf si la réunion a explicitement traité les risques. Préfère omettre la section.
+- Si une responsabilité est ambiguë, écris clairement que la responsabilité n’a pas pu être déterminée avec certitude.
+- Ne crée jamais de participant, de décision, de risque, de tâche, de budget ou d'échéance absent de la transcription.
+- Soigne les paragraphes, les retours à la ligne et les listes pour produire un document agréable à lire.
 
 Règles d'extraction des tâches :
 - Liste uniquement les vraies actions clairement mentionnées dans la réunion.
 - Si aucune action n'est identifiable, retourne [].
 - Reformule chaque tâche pour qu'elle soit précise, courte et directement actionnable.
+- Chaque tâche doit contenir autant que possible l'action, le contexte utile, le responsable et l'échéance, mais uniquement si ces informations existent réellement.
+- Une bonne tâche ressemble à : "Envoyer le devis au client afin de permettre la validation du projet avant le 30 juin."
 - Ne crée jamais une tâche implicite ou probable.
 - Ne regroupe pas plusieurs actions différentes dans une seule tâche.
 - Conserve le responsable et l'échéance uniquement s'ils sont identifiables dans la transcription ou par correspondance fiable avec les collaborateurs.
@@ -163,6 +385,16 @@ Si aucun nom n'est cité, tu peux attribuer selon le rôle uniquement si la tâc
 
 Ne jamais inventer un identifiant.
 
+Contrôle qualité final avant de retourner le JSON :
+- Aucune section vide.
+- Aucune tâche dupliquée.
+- Aucun participant inventé ou dupliqué.
+- Aucune décision répétée.
+- Aucune information incohérente avec la transcription.
+- Les tâches ne doivent contenir que des actions réellement évoquées.
+- Les échéances doivent être ISO YYYY-MM-DD ou null.
+- Le compte rendu et les tâches doivent raconter la même réunion, sans contradiction.
+
 Participants présents sélectionnés dans l'application :
 
 ${selectedParticipants}
@@ -177,12 +409,15 @@ ${transcriptionText}
 
     const content = completion.choices[0].message.content || "{}";
     const result = JSON.parse(content);
+    const title = sanitizeTitle(result.title);
+    const report = sanitizeReport(result.report);
+    const tasks = sanitizeTasks(result.tasks);
 
     return Response.json({
-  title: result.title || "Réunion sans titre",
-  report: result.report || "Aucun compte rendu généré.",
-  tasks: result.tasks || [],
-});
+      title,
+      report,
+      tasks,
+    });
   } catch (error) {
     console.error(error);
 
