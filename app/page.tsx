@@ -8,6 +8,8 @@ import { supabase } from "../lib/supabase";
 
 type Meeting = {
   id: number;
+  user_id?: string | null;
+  organization_id?: number | null;
   title: string;
   file_name: string;
   created_at: string;
@@ -17,6 +19,8 @@ type Meeting = {
 
 type MeetingFolder = {
   id: number;
+  user_id?: string | null;
+  organization_id?: number | null;
   name: string;
   description?: string | null;
   color?: string | null;
@@ -25,6 +29,8 @@ type MeetingFolder = {
 
 type Employee = {
   id: number;
+  user_id?: string | null;
+  organization_id?: number | null;
   name: string;
   role: string;
   email: string;
@@ -35,6 +41,13 @@ type TaskFromAI = {
   responsible?: string;
   responsible_employee_id?: number | null;
   due_date?: string;
+  priority?: string | null;
+  context?: string | null;
+};
+
+type PendingDetectedTask = TaskFromAI & {
+  tempId: string;
+  meetingId: number;
 };
 
 type ApiResponse = {
@@ -44,10 +57,29 @@ type ApiResponse = {
   error?: string;
 };
 
-type TaskStatus = "À faire" | "En cours" | "Fait";
+type MemorySource = {
+  meeting_id: number;
+  title: string;
+  date: string;
+  author?: string | null;
+  minute?: string | null;
+  excerpt?: string | null;
+};
+
+type MemorySearchResponse = {
+  answer: string;
+  sources: MemorySource[];
+  error?: string;
+};
+
+type TaskStatus = "À faire" | "En cours" | "Terminée" | "En retard";
 
 type Task = {
   id: number;
+  user_id?: string | null;
+  organization_id?: number | null;
+  created_by?: string | null;
+  priority?: "Basse" | "Normale" | "Haute" | "Urgente" | null;
   meeting_id: number;
   created_at?: string;
   action: string;
@@ -58,17 +90,40 @@ type Task = {
   completed_at?: string | null;
 };
 
+type ActivityLog = {
+  id: number;
+  organization_id: number;
+  actor_id: string | null;
+  actor_name: string | null;
+  action_type: string;
+  description: string;
+  entity_type: string | null;
+  entity_id: number | null;
+  created_at: string;
+};
+
 type MeetingParticipantRow = {
+  user_id?: string | null;
+  organization_id?: number | null;
   employees: Employee | Employee[] | null;
 };
 
 type MeetingParticipantSearchRow = {
+  user_id?: string | null;
+  organization_id?: number | null;
   meeting_id: number;
   employees: Employee | Employee[] | null;
 };
 
-type AppSection = "dashboard" | "new" | "report" | "history" | "collaborators";
-type DashboardPeriod = "week" | "month" | "year" | "all";
+type AppSection =
+  | "dashboard"
+  | "new"
+  | "report"
+  | "history"
+  | "collaborators"
+  | "profile"
+  | "organization";
+type DashboardPeriod = "today" | "week" | "month" | "year" | "all";
 type DashboardSelection =
   | "meetings"
   | "todo"
@@ -78,7 +133,61 @@ type DashboardSelection =
   | null;
 
 const GENERATING_REPORT_MESSAGE = "Génération du compte rendu en cours...";
-type AuthMode = "login" | "signup";
+type AuthMode = "login" | "signup" | "forgot" | "update-password";
+type UserProfile = {
+  id: string;
+  organization_id: number | null;
+  role: "ADMIN" | "MANAGER" | "COLLABORATEUR" | null;
+  full_name: string | null;
+  email: string | null;
+  avatar_url: string | null;
+  job_title: string | null;
+  company: string | null;
+  created_at: string;
+};
+
+type Organization = {
+  id: number;
+  name: string;
+  logo_url: string | null;
+  industry: string | null;
+  employee_count: string | null;
+  created_at: string;
+  created_by: string | null;
+};
+
+type OrganizationRole = "ADMIN" | "MANAGER" | "COLLABORATEUR";
+type CollaboratorStatus = "active" | "suspended";
+
+type OrganizationMember = {
+  id: string;
+  organization_id: number | null;
+  role: OrganizationRole | null;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string | null;
+  email: string | null;
+  avatar_url: string | null;
+  job_title: string | null;
+  status: CollaboratorStatus | null;
+  created_at: string;
+};
+
+type Invitation = {
+  id: number;
+  organization_id: number;
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  job_title: string | null;
+  role: OrganizationRole;
+  token: string;
+  status: "pending" | "accepted" | "expired" | "revoked";
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+  invited_by: string | null;
+};
 
 export default function Home() {
   const [authUser, setAuthUser] = useState<User | null>(null);
@@ -89,8 +198,52 @@ export default function Home() {
   const [authPassword, setAuthPassword] = useState("");
   const [authStatus, setAuthStatus] = useState("");
   const [authError, setAuthError] = useState("");
+  const [needsEmailConfirmation, setNeedsEmailConfirmation] = useState(false);
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [organization, setOrganization] = useState<Organization | null>(null);
+  const [organizationForm, setOrganizationForm] = useState({
+    name: "",
+    industry: "",
+  });
+  const [organizationStatus, setOrganizationStatus] = useState("");
+  const [organizationError, setOrganizationError] = useState("");
+  const [isOrganizationSaving, setIsOrganizationSaving] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [organizationMembers, setOrganizationMembers] = useState<
+    OrganizationMember[]
+  >([]);
+  const [organizationInvitations, setOrganizationInvitations] = useState<
+    Invitation[]
+  >([]);
+  const [collaboratorSearch, setCollaboratorSearch] = useState("");
+  const [collaboratorFilter, setCollaboratorFilter] = useState<
+    "all" | "admins" | "managers" | "collaborators" | "pending"
+  >("all");
+  const [openCollaboratorMenuId, setOpenCollaboratorMenuId] = useState<
+    string | null
+  >(null);
+  const [inviteForm, setInviteForm] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    job_title: "",
+    role: "COLLABORATEUR" as OrganizationRole,
+  });
+  const [profileForm, setProfileForm] = useState({
+    full_name: "",
+    job_title: "",
+  });
+  const [profileStatus, setProfileStatus] = useState("");
+  const [profileError, setProfileError] = useState("");
+  const [isProfileSaving, setIsProfileSaving] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const [showDeleteRecordingConfirm, setShowDeleteRecordingConfirm] =
+    useState(false);
   const [message, setMessage] = useState("");
   const [editedReport, setEditedReport] = useState("");
   const [reportError, setReportError] = useState("");
@@ -114,10 +267,19 @@ export default function Home() {
   const [meetingParticipantsByMeetingId, setMeetingParticipantsByMeetingId] =
     useState<Record<number, Employee[]>>({});
   const [selectedEmployees, setSelectedEmployees] = useState<number[]>([]);
-  const [employeeSearch, setEmployeeSearch] = useState("");
   const [participantSearch, setParticipantSearch] = useState("");
   const [meetingSearch, setMeetingSearch] = useState("");
   const [dashboardSearch, setDashboardSearch] = useState("");
+  const [debouncedDashboardSearch, setDebouncedDashboardSearch] = useState("");
+  const [isDashboardSearchPanelOpen, setIsDashboardSearchPanelOpen] =
+    useState(false);
+  const [memoryAnswer, setMemoryAnswer] = useState("");
+  const [memorySources, setMemorySources] = useState<MemorySource[]>([]);
+  const [memoryError, setMemoryError] = useState("");
+  const [memoryRecentSearches, setMemoryRecentSearches] = useState<string[]>(
+    []
+  );
+  const [isMemorySearching, setIsMemorySearching] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [deletedMeetings, setDeletedMeetings] = useState<Meeting[]>([]);
   const [isEditing, setIsEditing] = useState(false);
@@ -171,11 +333,22 @@ const [reminderStatus, setReminderStatus] = useState("");
   );
   const [liveMeetingElapsedSeconds, setLiveMeetingElapsedSeconds] = useState(0);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [pendingDetectedTasks, setPendingDetectedTasks] = useState<
+    PendingDetectedTask[]
+  >([]);
+  const [creatingDetectedTaskIds, setCreatingDetectedTaskIds] = useState<
+    string[]
+  >([]);
   const [dashboardTasks, setDashboardTasks] = useState<Task[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [workspaceError, setWorkspaceError] = useState("");
   const [dashboardPeriod, setDashboardPeriod] =
     useState<DashboardPeriod>("week");
   const [dashboardSelection, setDashboardSelection] =
-    useState<DashboardSelection>(null);
+    useState<DashboardSelection>("todo");
+  const [selectedDashboardTaskId, setSelectedDashboardTaskId] = useState<
+    number | null
+  >(null);
   const [activeSection, setActiveSection] = useState<AppSection>("dashboard");
   const [openedHistoryMeetingId, setOpenedHistoryMeetingId] = useState<
     number | null
@@ -208,18 +381,17 @@ const [reminderStatus, setReminderStatus] = useState("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const employeeNameInputRef = useRef<HTMLInputElement | null>(null);
+  const dashboardSearchContainerRef = useRef<HTMLDivElement | null>(null);
   const dashboardSearchInputRef = useRef<HTMLInputElement | null>(null);
   const meetingSearchInputRef = useRef<HTMLInputElement | null>(null);
   const employeeSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const lastAssistantSearchRef = useRef("");
 const [openTaskMenuId, setOpenTaskMenuId] = useState<number | null>(null);
 const [openMeetingMenuId, setOpenMeetingMenuId] = useState<number | null>(null);
 const [openFolderMenuId, setOpenFolderMenuId] = useState<number | null>(null);
-const [openEmployeeMenuId, setOpenEmployeeMenuId] = useState<number | null>(null);
 const [openTrashMeetingMenuId, setOpenTrashMeetingMenuId] = useState<
   number | null
 >(null);
-const [selectedEmployeeProfile, setSelectedEmployeeProfile] =
-  useState<Employee | null>(null);
 const [selectedResponsible, setSelectedResponsible] = useState("Tous");
 const [taskStatusFilter] = useState<
   "all" | "done" | "progress" | "todo"
@@ -246,12 +418,153 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
 	    setOpenTaskMenuId(null);
 	    setOpenMeetingMenuId(null);
 	    setOpenFolderMenuId(null);
-	    setOpenEmployeeMenuId(null);
+    setOpenCollaboratorMenuId(null);
     setOpenTrashMeetingMenuId(null);
+    setIsUserMenuOpen(false);
     setNewResponsibleTaskId(null);
     setEditingTaskId(null);
     setEditedTaskAction("");
   }, []);
+
+  function getCurrentUserId() {
+    return authUser?.id || null;
+  }
+
+  function getCurrentOrganizationId() {
+    return organization?.id || userProfile?.organization_id || null;
+  }
+
+  function isCurrentUserAdmin() {
+    return userProfile?.role === "ADMIN";
+  }
+
+  function canManageTeam() {
+    return userProfile?.role === "ADMIN" || userProfile?.role === "MANAGER";
+  }
+
+  function getWorkspaceScopeColumn() {
+    return getCurrentOrganizationId() ? "organization_id" : "user_id";
+  }
+
+  function getWorkspaceScopeValue() {
+    return getCurrentOrganizationId() || getCurrentUserId() || "";
+  }
+
+
+  function getAuthErrorMessage(message: string) {
+    const normalizedMessage = message.toLowerCase();
+
+    if (normalizedMessage.includes("invalid login credentials")) {
+      return "Adresse email ou mot de passe incorrect.";
+    }
+
+    if (normalizedMessage.includes("email not confirmed")) {
+      return "Veuillez confirmer votre adresse email avant de vous connecter.";
+    }
+
+    if (normalizedMessage.includes("user already registered")) {
+      return "Adresse email déjà utilisée.";
+    }
+
+    if (normalizedMessage.includes("invalid email")) {
+      return "Adresse email invalide.";
+    }
+
+    if (normalizedMessage.includes("password")) {
+      return "Le mot de passe doit contenir au moins 6 caractères.";
+    }
+
+    if (normalizedMessage.includes("user not found")) {
+      return "Compte introuvable.";
+    }
+
+    return message || "Une erreur est survenue. Réessaie dans quelques instants.";
+  }
+
+  function getProfileDisplayName(): string {
+    return (
+      userProfile?.full_name ||
+      authUser?.user_metadata?.full_name ||
+      authUser?.email?.split("@")[0] ||
+      "Utilisateur"
+    );
+  }
+
+  function getUserInitials() {
+    const displayName = getProfileDisplayName();
+    const initials = displayName
+      .split(" ")
+      .filter((part): part is string => Boolean(part))
+      .slice(0, 2)
+      .map((part: string) => part[0]?.toUpperCase())
+      .join("");
+
+    return initials || authUser?.email?.[0]?.toUpperCase() || "B";
+  }
+
+  function getInitialsFromName(displayName: string, email?: string) {
+    const initials = displayName
+      .split(" ")
+      .filter((part): part is string => Boolean(part))
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("");
+
+    return initials || email?.[0]?.toUpperCase() || "B";
+  }
+
+  function getAvatarColor(seed?: string | null) {
+    const palette = [
+      "bg-slate-900",
+      "bg-zinc-700",
+      "bg-stone-700",
+      "bg-emerald-700",
+      "bg-teal-700",
+      "bg-cyan-700",
+      "bg-blue-700",
+      "bg-indigo-700",
+      "bg-violet-700",
+      "bg-rose-700",
+    ];
+    const source = seed || "briefly";
+    const index = Array.from(source).reduce(
+      (total, character) => total + character.charCodeAt(0),
+      0
+    );
+
+    return palette[index % palette.length];
+  }
+
+  function renderInitialsAvatar({
+    displayName,
+    email,
+    seed,
+    sizeClass = "h-9 w-9",
+  }: {
+    displayName: string;
+    email?: string | null;
+    seed?: string | null;
+    sizeClass?: string;
+  }) {
+    return (
+      <span
+        className={`${sizeClass} ${getAvatarColor(
+          seed || email || displayName
+        )} inline-flex items-center justify-center rounded-full text-sm font-semibold text-white shadow-sm ring-1 ring-black/5`}
+      >
+        {getInitialsFromName(displayName, email || undefined)}
+      </span>
+    );
+  }
+
+  function renderUserAvatar(sizeClass = "h-9 w-9") {
+    return renderInitialsAvatar({
+      displayName: getProfileDisplayName(),
+      email: authUser?.email,
+      seed: authUser?.id || authUser?.email,
+      sizeClass,
+    });
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -276,9 +589,18 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       setAuthUser(session?.user || null);
+      if (!session?.user) {
+        setUserProfile(null);
+      }
       setIsAuthLoading(false);
+
+      if (event === "PASSWORD_RECOVERY") {
+        setAuthMode("update-password");
+        setAuthStatus("Choisissez un nouveau mot de passe.");
+        setAuthError("");
+      }
     });
 
     return () => {
@@ -292,13 +614,121 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
       return;
     }
 
+    loadUserProfile();
+    // Chargement volontairement lié au changement d'utilisateur connecté.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || !organization) {
+      return;
+    }
+
     loadMeetings();
     loadDeletedMeetings();
 	    loadMeetingFolders();
-	    loadEmployees();
-	    loadMeetingParticipantIndex();
+    loadEmployees();
+    loadOrganizationMembers();
+    loadOrganizationInvitations();
+    loadMeetingParticipantIndex();
 	    loadDashboardTasks();
-	  }, [authUser]);
+    loadActivityLogs();
+    // Les fonctions de chargement dépendent de la session et de l'organisation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+	  }, [authUser, organization]);
+
+  useEffect(() => {
+    const organizationId = getCurrentOrganizationId();
+    if (!authUser || !organizationId) return;
+
+    const reloadWorkspace = () => {
+      loadMeetings();
+      loadDeletedMeetings();
+      loadMeetingFolders();
+      loadEmployees();
+      loadMeetingParticipantIndex();
+      loadDashboardTasks();
+      loadOrganizationMembers();
+      loadOrganizationInvitations();
+      loadActivityLogs();
+    };
+
+    const channel = supabase
+      .channel(`briefly-organization-${organizationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "meetings",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        reloadWorkspace
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "tasks",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        reloadWorkspace
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "meeting_folders",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        reloadWorkspace
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "employees",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        reloadWorkspace
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "profiles",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        reloadWorkspace
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "activity_logs",
+          filter: `organization_id=eq.${organizationId}`,
+        },
+        loadActivityLogs
+      )
+      .subscribe((status) => {
+        if (status === "CHANNEL_ERROR") {
+          setWorkspaceError(
+            "Le temps réel Supabase n’est pas disponible. Active Realtime sur les tables de l’organisation."
+          );
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // Abonnement lié au workspace courant.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser, organization?.id, userProfile?.organization_id]);
 
   useEffect(() => {
     if (!isRecording || !liveMeetingStartedAt) {
@@ -338,6 +768,55 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }, [message]);
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedDashboardSearch(dashboardSearch.trim());
+    }, 350);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [dashboardSearch]);
+
+  useEffect(() => {
+    function closeDashboardSearchPanel(event: MouseEvent) {
+      if (
+        dashboardSearchContainerRef.current &&
+        !dashboardSearchContainerRef.current.contains(event.target as Node)
+      ) {
+        setIsDashboardSearchPanelOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", closeDashboardSearchPanel);
+
+    return () => {
+      document.removeEventListener("mousedown", closeDashboardSearchPanel);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeSection !== "dashboard") {
+      return;
+    }
+
+    const query = debouncedDashboardSearch.trim();
+
+    if (!query || !isAssistantQuestion(query)) {
+      if (!query) {
+        lastAssistantSearchRef.current = "";
+      }
+      return;
+    }
+
+    if (lastAssistantSearchRef.current === query) {
+      return;
+    }
+
+    lastAssistantSearchRef.current = query;
+    searchCompanyMemory(query);
+    // Recherche IA déclenchée uniquement après debounce sur la question dashboard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSection, debouncedDashboardSearch]);
+
+  useEffect(() => {
     function closeTopMostPopup() {
       if (pendingCloseTarget) {
         setPendingCloseTarget(null);
@@ -373,6 +852,14 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
       }
       if (showEmployeeModal) {
         setShowEmployeeModal(false);
+        return true;
+      }
+      if (showDeleteRecordingConfirm) {
+        setShowDeleteRecordingConfirm(false);
+        return true;
+      }
+      if (showInviteModal) {
+        setShowInviteModal(false);
         return true;
       }
       if (showTrash) {
@@ -430,22 +917,580 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     showBulkTasksModal,
     showEmailModal,
     showEmployeeModal,
+    showDeleteRecordingConfirm,
     showFolderModal,
     showInviteParticipantsModal,
+    showInviteModal,
     showParticipantsModal,
     showReminderModal,
     showSendReportModal,
     showTrash,
   ]);
 
+  async function loadUserProfile() {
+    if (!authUser) return;
+    setIsProfileLoading(true);
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", authUser.id)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Erreur chargement profil:", error);
+      setIsProfileLoading(false);
+      return;
+    }
+
+    let profile = data as UserProfile | null;
+
+    if (!profile) {
+      const { data: createdProfile, error: profileCreationError } = await supabase
+        .from("profiles")
+        .upsert({
+          id: authUser.id,
+          full_name: authUser.user_metadata?.full_name || "",
+          email: authUser.email || "",
+          role: null,
+          organization_id: null,
+        })
+        .select("*")
+        .single();
+
+      if (profileCreationError) {
+        console.error("Erreur création profil:", profileCreationError);
+        setIsProfileLoading(false);
+        return;
+      }
+
+      profile = createdProfile as UserProfile;
+    }
+
+    setUserProfile(profile);
+    setProfileForm({
+      full_name: profile.full_name || "",
+      job_title: profile.job_title || "",
+    });
+
+    if (profile.organization_id) {
+      const { data: organizationData, error: organizationLoadError } =
+        await supabase
+          .from("organizations")
+          .select("*")
+          .eq("id", profile.organization_id)
+          .maybeSingle();
+
+      if (organizationLoadError) {
+        console.error("Erreur chargement entreprise:", organizationLoadError);
+        setOrganization(null);
+        setIsProfileLoading(false);
+        return;
+      }
+
+      setOrganization((organizationData as Organization | null) || null);
+    } else {
+      setOrganization(null);
+    }
+
+    setIsProfileLoading(false);
+  }
+
+  async function saveUserProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!authUser) return;
+
+    setProfileStatus("");
+    setProfileError("");
+    setIsProfileSaving(true);
+
+    const payload = {
+      id: authUser.id,
+      full_name: profileForm.full_name.trim(),
+      email: authUser.email || "",
+      job_title: profileForm.job_title.trim() || null,
+    };
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .upsert(payload)
+      .select("*")
+      .single();
+
+    setIsProfileSaving(false);
+
+    if (error) {
+      console.error(error);
+      setProfileError("Impossible d’enregistrer le profil.");
+      return;
+    }
+
+    setUserProfile(data as UserProfile);
+    setProfileStatus("Profil mis à jour.");
+  }
+
+  async function createOrganization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!authUser) return;
+
+    const name = organizationForm.name.trim();
+    const industry = organizationForm.industry.trim();
+
+    if (!name) {
+      setOrganizationError("Indiquez le nom de votre entreprise.");
+      return;
+    }
+
+    setOrganizationStatus("");
+    setOrganizationError("");
+    setIsOrganizationSaving(true);
+
+    const { data, error } = await supabase
+      .rpc("create_organization_workspace", {
+        organization_name: name,
+        organization_industry: industry || null,
+      })
+      .single();
+
+    setIsOrganizationSaving(false);
+
+    if (error || !data) {
+      console.error("Erreur Supabase création espace de travail:", {
+        message: error?.message,
+        details: error?.details,
+        hint: error?.hint,
+        code: error?.code,
+      });
+      setOrganizationError(
+        error?.message ||
+          "Impossible de créer votre espace de travail. Consultez la console pour le détail Supabase."
+      );
+      return;
+    }
+
+    const createdOrganization = data as Organization;
+    setOrganization(createdOrganization);
+    await loadUserProfile();
+    setActiveSection("dashboard");
+    setOrganizationStatus("Espace de travail créé.");
+  }
+
+  async function loadOrganizationMembers() {
+    const organizationId = getCurrentOrganizationId();
+    if (!organizationId) return;
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Erreur chargement membres:", error);
+      return;
+    }
+
+    setOrganizationMembers((data || []) as OrganizationMember[]);
+  }
+
+  async function loadOrganizationInvitations() {
+    const organizationId = getCurrentOrganizationId();
+    if (!organizationId) return;
+
+    const { data, error } = await supabase
+      .from("invitations")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Erreur chargement invitations:", error);
+      return;
+    }
+
+    setOrganizationInvitations((data || []) as Invitation[]);
+  }
+
+  function createInvitationToken() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes)
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  async function sendInvitation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!authUser || !organization || !canManageTeam()) {
+      setOrganizationError("Seuls les administrateurs et managers peuvent inviter.");
+      return;
+    }
+
+    const email = inviteForm.email.trim().toLowerCase();
+    if (!email || !inviteForm.first_name.trim() || !inviteForm.last_name.trim()) {
+      setOrganizationError("Prénom, nom et email sont obligatoires.");
+      return;
+    }
+
+    setOrganizationError("");
+    setOrganizationStatus("");
+
+    const token = createInvitationToken();
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 14);
+
+    const invitationPayload = {
+      organization_id: organization.id,
+      email,
+      first_name: inviteForm.first_name.trim(),
+      last_name: inviteForm.last_name.trim(),
+      job_title: inviteForm.job_title.trim() || null,
+      role: inviteForm.role,
+      token,
+      status: "pending",
+      expires_at: expiresAt.toISOString(),
+      invited_by: authUser.id,
+    };
+
+    const { data, error } = await supabase
+      .from("invitations")
+      .insert(invitationPayload)
+      .select("*")
+      .single();
+
+    if (error || !data) {
+      console.error("Erreur création invitation:", error);
+      setOrganizationError("Impossible de créer l’invitation.");
+      return;
+    }
+
+    const response = await fetch("/api/invitations/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email,
+        firstName: inviteForm.first_name.trim(),
+        lastName: inviteForm.last_name.trim(),
+        organizationName: organization.name,
+        inviterName: getProfileDisplayName(),
+        token,
+        inviteUrl:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/invite?token=${token}`
+            : "",
+      }),
+    });
+
+    if (!response.ok) {
+      const result = await response.json();
+      console.error(result);
+      setOrganizationError(
+        "Invitation créée, mais l’email n’a pas pu être envoyé."
+      );
+    } else {
+      setOrganizationStatus("Invitation envoyée.");
+    }
+
+    setOrganizationInvitations((currentInvitations) => [
+      data as Invitation,
+      ...currentInvitations,
+    ]);
+    await logActivity({
+      actionType: "invitation.created",
+      description: `${getProfileDisplayName()} a invité ${inviteForm.first_name.trim()} ${inviteForm.last_name.trim()}.`,
+      entityType: "invitation",
+      entityId: (data as Invitation).id,
+    });
+    setInviteForm({
+      first_name: "",
+      last_name: "",
+      email: "",
+      job_title: "",
+      role: "COLLABORATEUR",
+    });
+    setShowInviteModal(false);
+  }
+
+  async function resendInvitation(invitation: Invitation) {
+    if (!organization || !isCurrentUserAdmin()) return;
+    const confirmed = window.confirm("Renvoyer cette invitation ?");
+    if (!confirmed) return;
+
+    const response = await fetch("/api/invitations/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: invitation.email,
+        firstName: invitation.first_name || "",
+        lastName: invitation.last_name || "",
+        organizationName: organization.name,
+        inviterName: getProfileDisplayName(),
+        token: invitation.token,
+        inviteUrl:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/invite?token=${invitation.token}`
+            : "",
+      }),
+    });
+
+    setOrganizationStatus(
+      response.ok
+        ? "Invitation renvoyée."
+        : "Impossible de renvoyer l’invitation."
+    );
+  }
+
+  async function updateInvitationRole(
+    invitation: Invitation,
+    role: OrganizationRole
+  ) {
+    if (!isCurrentUserAdmin()) return;
+    const confirmed = window.confirm(`Changer le rôle en ${role} ?`);
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("invitations")
+      .update({ role })
+      .eq("id", invitation.id)
+      .eq("organization_id", organization?.id);
+
+    if (error) {
+      console.error(error);
+      setOrganizationError("Impossible de changer le rôle de l’invitation.");
+      return;
+    }
+
+    setOrganizationInvitations((currentInvitations) =>
+      currentInvitations.map((currentInvitation) =>
+        currentInvitation.id === invitation.id
+          ? { ...currentInvitation, role }
+          : currentInvitation
+      )
+    );
+  }
+
+  async function revokeInvitation(invitation: Invitation) {
+    if (!isCurrentUserAdmin()) return;
+    const confirmed = window.confirm("Supprimer cette invitation ?");
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("invitations")
+      .update({ status: "revoked" })
+      .eq("id", invitation.id)
+      .eq("organization_id", organization?.id);
+
+    if (error) {
+      console.error(error);
+      setOrganizationError("Impossible de supprimer l’invitation.");
+      return;
+    }
+
+    setOrganizationInvitations((currentInvitations) =>
+      currentInvitations.filter(
+        (currentInvitation) => currentInvitation.id !== invitation.id
+      )
+    );
+    setOrganizationStatus("Invitation supprimée.");
+  }
+
+  async function updateMemberRole(member: OrganizationMember, role: OrganizationRole) {
+    if (!isCurrentUserAdmin()) return;
+    const confirmed = window.confirm(`Changer le rôle en ${role} ?`);
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ role })
+      .eq("id", member.id)
+      .eq("organization_id", organization?.id);
+
+    if (error) {
+      console.error(error);
+      setOrganizationError("Impossible de changer le rôle.");
+      return;
+    }
+
+    setOrganizationMembers((currentMembers) =>
+      currentMembers.map((currentMember) =>
+        currentMember.id === member.id ? { ...currentMember, role } : currentMember
+      )
+    );
+    await logActivity({
+      actionType: "member.role_changed",
+      description: `${getProfileDisplayName()} a changé le rôle de ${
+        member.full_name || member.email || "un membre"
+      } en ${role}.`,
+      entityType: "profile",
+      entityId: null,
+    });
+  }
+
+  async function updateMemberStatus(
+    member: OrganizationMember,
+    status: CollaboratorStatus
+  ) {
+    if (!isCurrentUserAdmin()) return;
+    const confirmed = window.confirm(
+      status === "suspended"
+        ? "Suspendre ce membre ?"
+        : "Réactiver ce membre ?"
+    );
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ status })
+      .eq("id", member.id)
+      .eq("organization_id", organization?.id);
+
+    if (error) {
+      console.error(error);
+      setOrganizationError("Impossible de modifier le statut.");
+      return;
+    }
+
+    setOrganizationMembers((currentMembers) =>
+      currentMembers.map((currentMember) =>
+        currentMember.id === member.id
+          ? { ...currentMember, status }
+          : currentMember
+      )
+    );
+    await logActivity({
+      actionType: "member.status_changed",
+      description: `${getProfileDisplayName()} a ${
+        status === "suspended" ? "suspendu" : "réactivé"
+      } ${member.full_name || member.email || "un membre"}.`,
+      entityType: "profile",
+      entityId: null,
+    });
+  }
+
+  async function removeMember(member: OrganizationMember) {
+    if (!isCurrentUserAdmin()) return;
+    const confirmed = window.confirm("Supprimer ce membre de l’entreprise ?");
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ organization_id: null, role: null, status: "suspended" })
+      .eq("id", member.id)
+      .eq("organization_id", organization?.id);
+
+    if (error) {
+      console.error(error);
+      setOrganizationError("Impossible de supprimer ce membre.");
+      return;
+    }
+
+    setOrganizationMembers((currentMembers) =>
+      currentMembers.filter((currentMember) => currentMember.id !== member.id)
+    );
+    await logActivity({
+      actionType: "member.removed",
+      description: `${getProfileDisplayName()} a supprimé ${
+        member.full_name || member.email || "un membre"
+      } de l’entreprise.`,
+      entityType: "profile",
+      entityId: null,
+    });
+  }
+
+  async function resendConfirmationEmail() {
+    const email = authEmail.trim();
+
+    if (!email) {
+      setAuthError("Indiquez votre adresse email.");
+      return;
+    }
+
+    const { error } = await supabase.auth.resend({
+      type: "signup",
+      email,
+    });
+
+    if (error) {
+      setAuthError(getAuthErrorMessage(error.message));
+      return;
+    }
+
+    setAuthStatus("Email de confirmation renvoyé.");
+  }
+
   async function handleAuthSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthError("");
     setAuthStatus("");
+    setNeedsEmailConfirmation(false);
 
     const email = authEmail.trim();
     const password = authPassword.trim();
     const fullName = authFullName.trim();
+
+    if (authMode === "forgot") {
+      const emailToReset = resetEmail.trim() || email;
+
+      if (!emailToReset) {
+        setAuthError("Indiquez votre adresse email.");
+        return;
+      }
+
+      setIsAuthSubmitting(true);
+
+      try {
+        const { error } = await supabase.auth.resetPasswordForEmail(
+          emailToReset,
+          {
+            redirectTo:
+              typeof window !== "undefined" ? window.location.origin : undefined,
+          }
+        );
+
+        if (error) {
+          setAuthError(getAuthErrorMessage(error.message));
+          return;
+        }
+
+        setAuthStatus("Email de réinitialisation envoyé.");
+        setResetEmail("");
+      } finally {
+        setIsAuthSubmitting(false);
+      }
+
+      return;
+    }
+
+    if (authMode === "update-password") {
+      if (!newPassword.trim()) {
+        setAuthError("Indiquez un nouveau mot de passe.");
+        return;
+      }
+
+      setIsAuthSubmitting(true);
+
+      try {
+        const { error } = await supabase.auth.updateUser({
+          password: newPassword.trim(),
+        });
+
+        if (error) {
+          setAuthError(getAuthErrorMessage(error.message));
+          return;
+        }
+
+        setAuthStatus("Mot de passe mis à jour.");
+        setNewPassword("");
+        setAuthMode("login");
+      } finally {
+        setIsAuthSubmitting(false);
+      }
+
+      return;
+    }
 
     if (!email || !password || (authMode === "signup" && !fullName)) {
       setAuthError("Tous les champs obligatoires doivent être renseignés.");
@@ -462,7 +1507,11 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
         });
 
         if (error) {
-          setAuthError(error.message);
+          const translatedError = getAuthErrorMessage(error.message);
+          setAuthError(translatedError);
+          setNeedsEmailConfirmation(
+            error.message.toLowerCase().includes("email not confirmed")
+          );
           return;
         }
 
@@ -481,7 +1530,7 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
       });
 
       if (error) {
-        setAuthError(error.message);
+        setAuthError(getAuthErrorMessage(error.message));
         return;
       }
 
@@ -501,7 +1550,7 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
           setAuthStatus(
             data.session
               ? "Compte créé. Bienvenue dans Briefly."
-              : "Compte créé. Vérifiez votre email si la confirmation est activée."
+              : "Compte créé. Vérifiez votre email pour confirmer votre adresse."
           );
         }
       }
@@ -558,9 +1607,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }, [closeAllMenus]);
 
   async function loadMeetings() {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const { data, error } = await supabase
       .from("meetings")
       .select("*")
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .is("deleted_at", null)
       .order("created_at", { ascending: false });
 
@@ -573,9 +1626,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }
 
   async function loadDeletedMeetings() {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const { data, error } = await supabase
       .from("meetings")
       .select("*")
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .not("deleted_at", "is", null)
       .order("deleted_at", { ascending: false });
 
@@ -588,9 +1645,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }
 
 	  async function loadMeetingFolders() {
+      const userId = getCurrentUserId();
+      if (!userId) return;
+
 	    const { data, error } = await supabase
 	      .from("meeting_folders")
 	      .select("*")
+        .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
 	      .order("created_at", { ascending: false });
 	
 	    if (error) {
@@ -648,10 +1709,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
 
   async function updateMeetingFolder(meetingIds: number[], folderId: number | null) {
     if (meetingIds.length === 0) return true;
+    const userId = getCurrentUserId();
+    if (!userId) return false;
 
 	    const { error } = await supabase
 	      .from("meetings")
 	      .update({ folder_id: folderId })
+        .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
 	      .in("id", meetingIds);
 	
 	    if (error) {
@@ -679,9 +1743,15 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     }
 
     if (folderModalMode === "create") {
+      const userId = getCurrentUserId();
+      if (!userId) return;
+      const organizationId = getCurrentOrganizationId();
+
       const { data, error } = await supabase
         .from("meeting_folders")
         .insert({
+          user_id: userId,
+          organization_id: organizationId,
           name: trimmedName,
           description: null,
           color: null,
@@ -697,6 +1767,12 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
 
       const createdFolder = data as MeetingFolder;
       setMeetingFolders((currentFolders) => [createdFolder, ...currentFolders]);
+      await logActivity({
+        actionType: "folder.created",
+        description: `${getProfileDisplayName()} a créé le dossier “${createdFolder.name}”.`,
+        entityType: "meeting_folder",
+        entityId: createdFolder.id,
+      });
       setExpandedFolderIds((currentIds) => [
         ...new Set([...currentIds, createdFolder.id]),
       ]);
@@ -713,9 +1789,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     if (!activeFolder) return;
 
     if (folderModalMode === "rename") {
+      const userId = getCurrentUserId();
+      if (!userId) return;
+
       const { error } = await supabase
         .from("meeting_folders")
         .update({ name: trimmedName })
+        .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
         .eq("id", activeFolder.id);
 
       if (error) {
@@ -749,6 +1829,9 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }
 
   async function deleteFolder(folder: MeetingFolder) {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const detached = await updateMeetingFolder(
       meetings
         .filter((meeting) => meeting.folder_id === folder.id)
@@ -758,7 +1841,11 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
 
     if (!detached) return;
 
-    const { error } = await supabase.from("meeting_folders").delete().eq("id", folder.id);
+    const { error } = await supabase
+      .from("meeting_folders")
+      .delete()
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
+      .eq("id", folder.id);
 
     if (error) {
       console.error("Erreur Supabase suppression dossier:", error);
@@ -777,9 +1864,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }
 
   async function loadEmployees() {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const { data, error } = await supabase
       .from("employees")
       .select("*")
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .order("name");
 
     if (error) {
@@ -791,9 +1882,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }
 
   async function loadMeetingParticipantIndex() {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const { data, error } = await supabase
       .from("meeting_participants")
-      .select("meeting_id, employees(*)");
+      .select("meeting_id, employees(*)")
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue());
 
     if (error) {
       console.warn("Impossible de charger l'index participants:", error);
@@ -821,9 +1916,13 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
   }
 
   async function loadDashboardTasks() {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const { data, error } = await supabase
       .from("tasks")
       .select("*")
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -832,6 +1931,55 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     }
 
     setDashboardTasks((data || []) as Task[]);
+  }
+
+  async function loadActivityLogs() {
+    const organizationId = getCurrentOrganizationId();
+    if (!organizationId) return;
+
+    const { data, error } = await supabase
+      .from("activity_logs")
+      .select("*")
+      .eq("organization_id", organizationId)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      console.error("Erreur chargement journal d’activité:", error);
+      setWorkspaceError(error.message);
+      return;
+    }
+
+    setActivityLogs((data || []) as ActivityLog[]);
+  }
+
+  async function logActivity({
+    actionType,
+    description,
+    entityType,
+    entityId,
+  }: {
+    actionType: string;
+    description: string;
+    entityType?: string;
+    entityId?: number | null;
+  }) {
+    const organizationId = getCurrentOrganizationId();
+    if (!organizationId) return;
+
+    const { error } = await supabase.from("activity_logs").insert({
+      organization_id: organizationId,
+      actor_id: getCurrentUserId(),
+      actor_name: getProfileDisplayName(),
+      action_type: actionType,
+      description,
+      entity_type: entityType || null,
+      entity_id: entityId || null,
+    });
+
+    if (error) {
+      console.error("Erreur journal d’activité:", error);
+    }
   }
 
   function startLiveMeetingSession() {
@@ -853,6 +2001,18 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     setConnectedLiveParticipantIds([]);
     setPendingInviteEmployeeIds([]);
     setShowInviteParticipantsModal(false);
+  }
+
+  function clearTemporaryRecording() {
+    setFile(null);
+    setMessage("");
+    setReportError("");
+    setCurrentTitle("");
+    setLiveMeetingElapsedSeconds(0);
+    setSelectedEmployees([]);
+    setPendingParticipantIds([]);
+    endLiveMeetingSession();
+    setShowDeleteRecordingConfirm(false);
   }
 
   function inviteLiveParticipants(employeeIds: number[]) {
@@ -886,6 +2046,10 @@ const [editedTaskAction, setEditedTaskAction] = useState("");
     setShowParticipantsModal(true);
   }
 async function saveEmployeeForm() {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+  const organizationId = getCurrentOrganizationId();
+
   if (!employeeForm.name.trim()) {
     alert("Le nom est obligatoire.");
     return;
@@ -899,6 +2063,7 @@ async function saveEmployeeForm() {
         role: employeeForm.role,
         email: employeeForm.email,
       })
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .eq("id", editingEmployee.id);
 
     if (error) {
@@ -911,6 +2076,8 @@ async function saveEmployeeForm() {
     setEditingEmployee(null);
   } else {
     const { error } = await supabase.from("employees").insert({
+      user_id: userId,
+      organization_id: organizationId,
       name: employeeForm.name,
       role: employeeForm.role,
       email: employeeForm.email,
@@ -929,75 +2096,10 @@ async function saveEmployeeForm() {
   await loadEmployees();
 }
 
-async function deleteEmployee(id: number) {
-  const confirmed = window.confirm(
-    "Supprimer ce collaborateur ?"
-  );
-
-  if (!confirmed) return;
-
-  const detachedTaskPayload = {
-    responsible_employee_id: null,
-    responsible: null,
-  };
-
-  const { error: detachError } = await supabase
-    .from("tasks")
-    .update(detachedTaskPayload)
-    .eq("responsible_employee_id", id);
-
-  if (detachError) {
-    console.error("Erreur Supabase détachement tâches collaborateur :", detachError);
-    alert(
-      detachError.message ||
-        "Impossible de détacher les tâches liées à ce collaborateur."
-    );
-    return;
-  }
-
-  const { error } = await supabase
-    .from("employees")
-    .delete()
-    .eq("id", id);
-
-  if (error) {
-    console.error("Erreur Supabase suppression collaborateur :", error);
-    alert(
-      error.message ||
-        "Erreur lors de la suppression du collaborateur. Vérifie les relations Supabase."
-    );
-    return;
-  }
-
-  const detachLocalTask = (task: Task) =>
-    task.responsible_employee_id === id
-      ? {
-          ...task,
-          responsible_employee_id: null,
-          responsible: null,
-        }
-      : task;
-
-  setEmployees((currentEmployees) =>
-    currentEmployees.filter((employee) => employee.id !== id)
-  );
-  setTasks((currentTasks) => currentTasks.map(detachLocalTask));
-  setHistoryTasks((currentTasks) => currentTasks.map(detachLocalTask));
-  setSelectedEmployees((currentSelectedEmployees) =>
-    currentSelectedEmployees.filter((employeeId) => employeeId !== id)
-  );
-  setPendingParticipantIds((currentPendingParticipantIds) =>
-    currentPendingParticipantIds.filter((employeeId) => employeeId !== id)
-  );
-  setEmailRecipients((currentEmailRecipients) =>
-    currentEmailRecipients.filter((employeeId) => employeeId !== id)
-  );
-  if (selectedEmployeeProfile?.id === id) {
-    setSelectedEmployeeProfile(null);
-  }
-  closeAllMenus();
-}
   async function deleteMeeting(id: number) {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const confirmed = window.confirm(
       "Es-tu sûr de vouloir supprimer cette réunion ? Elle sera placée dans la corbeille pendant 30 jours."
     );
@@ -1009,6 +2111,7 @@ async function deleteEmployee(id: number) {
       .update({
         deleted_at: new Date().toISOString(),
       })
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .eq("id", id);
 
     if (error) {
@@ -1021,11 +2124,15 @@ async function deleteEmployee(id: number) {
   }
 
   async function restoreMeeting(id: number) {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const { error } = await supabase
       .from("meetings")
       .update({
         deleted_at: null,
       })
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .eq("id", id);
 
     if (error) {
@@ -1038,13 +2145,20 @@ async function deleteEmployee(id: number) {
   }
 
   async function permanentlyDeleteMeeting(id: number) {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     const confirmed = window.confirm(
       "Supprimer définitivement cette réunion ? Cette action est irréversible."
     );
 
     if (!confirmed) return;
 
-    const { error } = await supabase.from("meetings").delete().eq("id", id);
+    const { error } = await supabase
+      .from("meetings")
+      .delete()
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
+      .eq("id", id);
 
     if (error) {
       console.error(error);
@@ -1151,6 +2265,24 @@ async function deleteEmployee(id: number) {
     return dueDate;
   }
 
+  function normalizeTaskPriority(priority: string | null | undefined) {
+    const normalizedPriority = (priority || "").trim().toLowerCase();
+
+    if (normalizedPriority === "haute" || normalizedPriority === "urgent") {
+      return "Haute";
+    }
+
+    if (normalizedPriority === "basse") {
+      return "Basse";
+    }
+
+    if (normalizedPriority === "urgente") {
+      return "Urgente";
+    }
+
+    return "Normale";
+  }
+
   function isMissingCompletedAtColumnError(error: unknown) {
     if (!error || typeof error !== "object") {
       return false;
@@ -1165,41 +2297,61 @@ async function deleteEmployee(id: number) {
   }
 
   async function saveTasks(meetingId: number, tasks: TaskFromAI[] = []) {
-  if (!tasks || tasks.length === 0) return;
+  if (!tasks || tasks.length === 0) return [];
+  const userId = getCurrentUserId();
+  if (!userId) return [];
+  const organizationId = getCurrentOrganizationId();
 
   const tasksToInsert = tasks.map((task) => {
   const assignment = findBestResponsible(task);
 
   return {
+    user_id: userId,
+    organization_id: organizationId,
+    created_by: userId,
     meeting_id: meetingId,
     action: task.action,
-    responsible: assignment.employee?.name || null,
+    responsible: assignment.employee?.name || task.responsible || null,
     responsible_employee_id: assignment.employee?.id || null,
     due_date: normalizeTaskDueDate(task.due_date),
+    priority: normalizeTaskPriority(task.priority),
     status: "À faire",
   };
 });
-  const { error } = await supabase.from("tasks").insert(tasksToInsert);
+  const { data, error } = await supabase
+    .from("tasks")
+    .insert(tasksToInsert)
+    .select("*");
 
   if (error) {
     console.error(error);
+    throw error;
   }
+
+  return (data || []) as Task[];
 }
 
   async function saveMeeting(
   title: string,
   report: string,
 	  fileName: string,
-	  tasks: TaskFromAI[] = [],
 	  participantIds: number[] = selectedEmployees,
 	  folderId: number | null = null
 ) {
+    const userId = getCurrentUserId();
+    if (!userId) return null;
+    const organizationId = getCurrentOrganizationId();
+
     const meetingPayload: {
+      user_id: string;
+      organization_id: number | null;
       title: string;
       report: string;
       file_name: string;
       folder_id?: number | null;
     } = {
+      user_id: userId,
+      organization_id: organizationId,
       title,
       report,
       file_name: fileName,
@@ -1221,6 +2373,8 @@ async function deleteEmployee(id: number) {
         error
       );
       const fallbackPayload = {
+        user_id: userId,
+        organization_id: organizationId,
         title,
         report,
         file_name: fileName,
@@ -1252,10 +2406,17 @@ if (data) {
   await loadMeetingTasks(data.id);
 }
 if (data) {
-  await saveTasks(data.id, tasks);
+  await logActivity({
+    actionType: "meeting.created",
+    description: `${getProfileDisplayName()} a créé la réunion “${title}”.`,
+    entityType: "meeting",
+    entityId: data.id,
+  });
 }
     if (data && participantIds.length > 0) {
       const participantsToInsert = participantIds.map((employeeId) => ({
+        user_id: userId,
+        organization_id: organizationId,
         meeting_id: data.id,
         employee_id: employeeId,
       }));
@@ -1275,6 +2436,64 @@ if (data) {
 		    await loadDashboardTasks();
 		    return data.id;
 		  }
+
+  function getDetectedTaskResponsibleLabel(task: TaskFromAI) {
+    if (task.responsible_employee_id) {
+      const employee = employees.find(
+        (currentEmployee) => currentEmployee.id === task.responsible_employee_id
+      );
+
+      if (employee) return employee.name;
+    }
+
+    return task.responsible || "Non attribué";
+  }
+
+  function ignoreDetectedTask(tempId: string) {
+    setPendingDetectedTasks((currentTasks) =>
+      currentTasks.filter((task) => task.tempId !== tempId)
+    );
+  }
+
+  async function createDetectedTasks(tasksToCreate: PendingDetectedTask[]) {
+    if (tasksToCreate.length === 0) return;
+
+    const taskIds = tasksToCreate.map((task) => task.tempId);
+    setCreatingDetectedTaskIds((currentIds) => [
+      ...new Set([...currentIds, ...taskIds]),
+    ]);
+
+    try {
+      const createdTasks = await saveTasks(
+        tasksToCreate[0].meetingId,
+        tasksToCreate
+      );
+
+      if (createdTasks.length > 0) {
+        setTasks((currentTasks) => [...currentTasks, ...createdTasks]);
+        setDashboardTasks((currentTasks) => [...createdTasks, ...currentTasks]);
+        setPendingDetectedTasks((currentTasks) =>
+          currentTasks.filter((task) => !taskIds.includes(task.tempId))
+        );
+        await logActivity({
+          actionType: "tasks.created",
+          description:
+            createdTasks.length === 1
+              ? `${getProfileDisplayName()} a créé la tâche “${createdTasks[0].action}”.`
+              : `${getProfileDisplayName()} a créé ${createdTasks.length} tâches détectées automatiquement.`,
+          entityType: "task",
+          entityId: createdTasks[0]?.id || null,
+        });
+      }
+    } catch (error) {
+      console.error("Erreur création tâches détectées:", error);
+      alert("Impossible de créer la tâche détectée. Consulte la console.");
+    } finally {
+      setCreatingDetectedTaskIds((currentIds) =>
+        currentIds.filter((taskId) => !taskIds.includes(taskId))
+      );
+    }
+  }
 
 	  async function startRecording() {
 	    try {
@@ -1393,7 +2612,6 @@ const savedMeetingId = await saveMeeting(
   data.title,
   data.report,
   file.name,
-  data.tasks || [],
   participantIds
 );
 
@@ -1404,6 +2622,14 @@ if (!savedMeetingId) {
 }
 
 await loadMeetingTasks(savedMeetingId);
+setPendingDetectedTasks(
+  (data.tasks || []).map((task, index) => ({
+    ...task,
+    tempId: `${savedMeetingId}-${index}-${Date.now()}`,
+    meetingId: savedMeetingId,
+  }))
+);
+setCreatingDetectedTaskIds([]);
 setCurrentMeetingId(savedMeetingId);
 setCurrentTitle(data.title);
 setMessage(data.report);
@@ -1450,7 +2676,7 @@ function getOpenTasksForEmployee(sourceTasks: Task[], employee: Employee) {
   const employeeName = employee.name.toLowerCase().trim();
 
   return sourceTasks.filter((task) => {
-    if (normalizeTaskStatus(task.status) === "Fait") {
+    if (normalizeTaskStatus(task.status) === "Terminée") {
       return false;
     }
 
@@ -1611,6 +2837,9 @@ await sendMeetingPackage({
 setShowEmailModal(false);
 }
 async function saveEditedReport() {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   if (!currentMeetingId) {
     setIsEditing(false);
     return;
@@ -1624,6 +2853,7 @@ async function saveEditedReport() {
       title: nextTitle,
       report: editedReport,
     })
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", currentMeetingId);
 
   if (error) {
@@ -1758,7 +2988,7 @@ async function saveEditedReport() {
             .join(", ")
         : "Aucun participant renseigné";
     const pendingTasks = reportTasks.filter(
-      (task) => normalizeTaskStatus(task.status) !== "Fait"
+      (task) => normalizeTaskStatus(task.status) !== "Terminée"
     );
 
     doc.setTextColor(17, 24, 39);
@@ -1870,15 +3100,22 @@ async function saveEditedReport() {
   }
 
   async function fetchMeetingPdfData(meetingId: number) {
+    const userId = getCurrentUserId();
+    if (!userId) {
+      return { reportTasks: [], participants: [] };
+    }
+
     const [tasksResponse, participantsResponse] = await Promise.all([
       supabase
         .from("tasks")
         .select("*")
+        .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
         .eq("meeting_id", meetingId)
         .order("created_at", { ascending: true }),
       supabase
         .from("meeting_participants")
         .select("employees(*)")
+        .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
         .eq("meeting_id", meetingId),
     ]);
 
@@ -1922,6 +3159,9 @@ async function saveEditedReport() {
   }
 
   async function saveEditedHistoryReport() {
+    const userId = getCurrentUserId();
+    if (!userId) return;
+
     if (!openedHistoryMeetingId) {
       setIsEditingHistory(false);
       return;
@@ -1936,6 +3176,7 @@ async function saveEditedReport() {
         title: nextTitle,
         report: editedHistoryReport,
       })
+      .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
       .eq("id", openedHistoryMeetingId);
 
     if (error) {
@@ -1966,9 +3207,13 @@ async function saveEditedReport() {
   }
 
   async function loadMeetingTasks(meetingId: number) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("meeting_id", meetingId)
     .order("created_at", { ascending: true });
 
@@ -1995,7 +3240,11 @@ function updateTaskEverywhere(
 }
 
 function normalizeTaskStatus(status: string | null | undefined): TaskStatus {
-  if (status === "En cours" || status === "Fait") {
+  if (status === "Fait" || status === "Terminée") {
+    return "Terminée";
+  }
+
+  if (status === "En cours" || status === "En retard") {
     return status;
   }
 
@@ -2010,14 +3259,84 @@ function getNextTaskStatus(task: Task): TaskStatus {
   }
 
   if (currentStatus === "En cours") {
-    return "Fait";
+    return "Terminée";
+  }
+
+  if (currentStatus === "Terminée" && task.due_date && task.due_date < getLocalDateIso()) {
+    return "En retard";
   }
 
   return "À faire";
 }
 
+function getEffectiveTaskStatus(task: Task): TaskStatus {
+  const status = normalizeTaskStatus(task.status);
+
+  if (
+    status !== "Terminée" &&
+    task.due_date &&
+    task.due_date < getLocalDateIso()
+  ) {
+    return "En retard";
+  }
+
+  return status;
+}
+
+function getTaskMeeting(task: Task) {
+  return meetings.find((meeting) => meeting.id === task.meeting_id) || null;
+}
+
+function getTaskResponsibleEmployee(task: Task) {
+  if (task.responsible_employee_id) {
+    return (
+      employees.find((employee) => employee.id === task.responsible_employee_id) ||
+      null
+    );
+  }
+
+  const responsibleName = task.responsible?.toLowerCase().trim();
+
+  if (!responsibleName) return null;
+
+  return (
+    employees.find(
+      (employee) => employee.name.toLowerCase().trim() === responsibleName
+    ) || null
+  );
+}
+
+function getTaskPriorityClass(priority: string | null | undefined) {
+  const normalizedPriority = normalizeTaskPriority(priority);
+
+  if (normalizedPriority === "Urgente") {
+    return "bg-red-50 text-red-700 ring-red-100";
+  }
+
+  if (normalizedPriority === "Haute") {
+    return "bg-orange-50 text-orange-700 ring-orange-100";
+  }
+
+  if (normalizedPriority === "Basse") {
+    return "bg-gray-50 text-gray-600 ring-gray-100";
+  }
+
+  return "bg-blue-50 text-blue-700 ring-blue-100";
+}
+
+function getDashboardTaskTitle(selection: DashboardSelection) {
+  if (selection === "meetings") return "Réunions";
+  if (selection === "progress") return "Tâches en cours";
+  if (selection === "done") return "Tâches terminées";
+  if (selection === "overdue") return "Tâches en retard";
+  return "Mes tâches ouvertes";
+}
+
 async function updateTaskStatus(task: Task, status: TaskStatus) {
-  const completedAt = status === "Fait" ? new Date().toISOString() : null;
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const completedAt = status === "Terminée" ? new Date().toISOString() : null;
   const updatePayload = {
     status,
     completed_at: completedAt,
@@ -2026,6 +3345,7 @@ async function updateTaskStatus(task: Task, status: TaskStatus) {
   const { error } = await supabase
     .from("tasks")
     .update(updatePayload)
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", task.id);
 
   if (error) {
@@ -2038,6 +3358,7 @@ async function updateTaskStatus(task: Task, status: TaskStatus) {
       const { error: fallbackError } = await supabase
         .from("tasks")
         .update({ status })
+        .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
         .eq("id", task.id);
 
       if (fallbackError) {
@@ -2055,9 +3376,22 @@ async function updateTaskStatus(task: Task, status: TaskStatus) {
     status,
     completed_at: completedAt,
   }));
+  await logActivity({
+    actionType:
+      status === "Terminée" ? "task.completed" : "task.status_changed",
+    description:
+      status === "Terminée"
+        ? `${getProfileDisplayName()} a terminé la tâche “${task.action}”.`
+        : `${getProfileDisplayName()} a passé la tâche “${task.action}” en ${status}.`,
+    entityType: "task",
+    entityId: task.id,
+  });
 }
 
 async function updateTaskAction(task: Task) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   const nextAction = editedTaskAction.trim();
 
   if (!nextAction) {
@@ -2068,6 +3402,7 @@ async function updateTaskAction(task: Task) {
   const { error } = await supabase
     .from("tasks")
     .update({ action: nextAction })
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", task.id);
 
   if (error) {
@@ -2084,9 +3419,13 @@ async function updateTaskAction(task: Task) {
   setEditedTaskAction("");
 }
 async function deleteTask(taskId: number) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   const { error } = await supabase
     .from("tasks")
     .delete()
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", taskId);
 
   if (error) {
@@ -2108,9 +3447,17 @@ async function deleteTask(taskId: number) {
   closeAllMenus();
 }
 async function updateTaskDueDate(taskId: number, dueDate: string) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+  const currentTask =
+    dashboardTasks.find((task) => task.id === taskId) ||
+    tasks.find((task) => task.id === taskId) ||
+    historyTasks.find((task) => task.id === taskId);
+
   const { error } = await supabase
     .from("tasks")
     .update({ due_date: dueDate || null })
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", taskId);
 
   if (error) {
@@ -2122,12 +3469,23 @@ async function updateTaskDueDate(taskId: number, dueDate: string) {
     ...task,
     due_date: dueDate || null,
   }));
+  if (currentTask) {
+    await logActivity({
+      actionType: "task.due_date_changed",
+      description: `${getProfileDisplayName()} a modifié la date limite de “${currentTask.action}”.`,
+      entityType: "task",
+      entityId: taskId,
+    });
+  }
 }
 async function updateTaskResponsible(task: Task, employeeId: number) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   const employee = employees.find((e) => e.id === employeeId);
 
   if (!employee) {
-    alert("Collaborateur introuvable.");
+    alert("Membre introuvable.");
     return;
   }
 
@@ -2139,6 +3497,7 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
   const { error } = await supabase
     .from("tasks")
     .update(updatePayload)
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", task.id);
 
   if (error) {
@@ -2152,11 +3511,51 @@ async function updateTaskResponsible(task: Task, employeeId: number) {
     responsible: employee.name,
     responsible_employee_id: employee.id,
   }));
+  await logActivity({
+    actionType: "task.responsible_changed",
+    description: `${employee.name} a pris la responsabilité de “${task.action}”.`,
+    entityType: "task",
+    entityId: task.id,
+  });
 
   closeAllMenus();
 }
 
+async function updateTaskPriority(task: Task, priority: Task["priority"]) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const normalizedPriority = normalizeTaskPriority(priority) as Task["priority"];
+
+  const { error } = await supabase
+    .from("tasks")
+    .update({ priority: normalizedPriority })
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
+    .eq("id", task.id);
+
+  if (error) {
+    console.error(error);
+    alert("Erreur lors de la modification de la priorité.");
+    return;
+  }
+
+  updateTaskEverywhere(task.id, (currentTask) => ({
+    ...currentTask,
+    priority: normalizedPriority,
+  }));
+  await logActivity({
+    actionType: "task.priority_changed",
+    description: `${getProfileDisplayName()} a passé la priorité de “${task.action}” à ${normalizedPriority}.`,
+    entityType: "task",
+    entityId: task.id,
+  });
+}
+
 async function createResponsibleAndAssignTask(task: Task) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+  const organizationId = getCurrentOrganizationId();
+
   if (!newResponsibleForm.name.trim()) {
     alert("Le nom du responsable est obligatoire.");
     return;
@@ -2165,6 +3564,8 @@ async function createResponsibleAndAssignTask(task: Task) {
   const { data, error } = await supabase
     .from("employees")
     .insert({
+      user_id: userId,
+      organization_id: organizationId,
       name: newResponsibleForm.name.trim(),
       role: newResponsibleForm.role.trim(),
       email: newResponsibleForm.email.trim(),
@@ -2187,11 +3588,12 @@ async function createResponsibleAndAssignTask(task: Task) {
   const { error: updateError } = await supabase
     .from("tasks")
     .update(updatePayload)
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("id", task.id);
 
   if (updateError) {
     console.error(updateError);
-    alert("Le collaborateur a été créé, mais la tâche n'a pas pu être assignée.");
+    alert("Le membre a été créé, mais la tâche n'a pas pu être assignée.");
     setEmployees((currentEmployees) =>
       [...currentEmployees, newEmployee].sort((a, b) =>
         a.name.localeCompare(b.name)
@@ -2235,7 +3637,7 @@ function getTaskResponsibleEmployeeId(task: Task) {
 function getTaskDueDateClass(task: Task) {
   const status = normalizeTaskStatus(task.status);
 
-  if (status === "Fait") {
+  if (status === "Terminée") {
     return "border-green-300 bg-green-50";
   }
 
@@ -2255,6 +3657,7 @@ function getLocalDateIso(date = new Date()) {
 }
 
 function getDashboardPeriodLabel(period: DashboardPeriod) {
+  if (period === "today") return "Aujourd’hui";
   if (period === "week") return "Cette semaine";
   if (period === "month") return "Ce mois";
   if (period === "year") return "Cette année";
@@ -2277,6 +3680,10 @@ function isDateInDashboardPeriod(
 
   if (Number.isNaN(date.getTime())) {
     return false;
+  }
+
+  if (period === "today") {
+    return getLocalDateIso(date) === getLocalDateIso();
   }
 
   const now = new Date();
@@ -2313,7 +3720,7 @@ function getTaskPeriodDate(task: Task, meetingsSource: Meeting[]) {
 
 function getOpenTasks(sourceTasks: Task[]) {
   return sourceTasks.filter(
-    (task) => normalizeTaskStatus(task.status) !== "Fait"
+    (task) => normalizeTaskStatus(task.status) !== "Terminée"
   );
 }
 
@@ -2446,7 +3853,7 @@ function getDashboardSelectionForTask(task: Task): Exclude<DashboardSelection, "
     return "progress";
   }
 
-  if (taskStatus === "Fait") {
+  if (taskStatus === "Terminée") {
     return "done";
   }
 
@@ -2656,7 +4063,7 @@ async function sendTaskToResponsible(task: Task) {
       });
 
   if (!responsibleEmployee) {
-    alert("Responsable introuvable dans la liste des collaborateurs.");
+    alert("Responsable introuvable dans la liste des membres.");
     return;
   }
 
@@ -2712,7 +4119,7 @@ async function sendTaskToResponsible(task: Task) {
 }
 
 function getTaskStatusBadgeClass(status: TaskStatus) {
-  if (status === "Fait") {
+  if (status === "Terminée") {
     return "bg-green-100 text-green-700 hover:bg-green-200";
   }
 
@@ -2724,7 +4131,7 @@ function getTaskStatusBadgeClass(status: TaskStatus) {
 }
 
 function getTaskStatusLabel(status: TaskStatus) {
-  if (status === "Fait") {
+  if (status === "Terminée") {
     return "🟢 Fait";
   }
 
@@ -2997,7 +4404,7 @@ function getPendingTasksByResponsible(
   sourceTasks: Task[] = tasks
 ) {
   const pendingTasks = sourceTasks.filter(
-    (task) => normalizeTaskStatus(task.status) !== "Fait"
+    (task) => normalizeTaskStatus(task.status) !== "Terminée"
   );
   const tasksByEmployee = new Map<Employee, Task[]>();
   const ignoredTasks: string[] = [];
@@ -3277,9 +4684,13 @@ END:VCALENDAR`;
   URL.revokeObjectURL(url);
 }
 async function loadHistoryMeetingTasks(meetingId: number) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   const { data, error } = await supabase
     .from("tasks")
     .select("*")
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("meeting_id", meetingId)
     .order("created_at", { ascending: true });
 
@@ -3292,9 +4703,13 @@ async function loadHistoryMeetingTasks(meetingId: number) {
 }
 
 async function loadHistoryMeetingParticipants(meetingId: number) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   const { data, error } = await supabase
     .from("meeting_participants")
     .select("employees(*)")
+    .eq(getWorkspaceScopeColumn(), getWorkspaceScopeValue())
     .eq("meeting_id", meetingId);
 
   if (error) {
@@ -3333,7 +4748,10 @@ async function openHistoryMeetingInline(
   ]);
 }
 
-async function openDashboardMeetingInHistory(meeting: Meeting) {
+async function openDashboardMeetingInHistory(
+  meeting: Meeting,
+  returnSection: AppSection = "dashboard"
+) {
   closeAllMenus();
   setMeetingSearch("");
 
@@ -3348,7 +4766,7 @@ async function openDashboardMeetingInHistory(meeting: Meeting) {
   }
 
   setActiveSection("history");
-  await openHistoryMeetingInline(meeting, "dashboard");
+  await openHistoryMeetingInline(meeting, returnSection);
 
   window.setTimeout(() => {
     document
@@ -3397,6 +4815,8 @@ function resetCurrentReport() {
   setEditedTitle("");
   setEditedReport("");
   setTasks([]);
+  setPendingDetectedTasks([]);
+  setCreatingDetectedTaskIds([]);
   setIsEditing(false);
   setIsCurrentParticipantsOpen(false);
   setIsCurrentTasksOpen(false);
@@ -3405,7 +4825,7 @@ function resetCurrentReport() {
 function resetTemporaryNavigationState() {
   setDashboardSearch("");
   setMeetingSearch("");
-  setEmployeeSearch("");
+  setCollaboratorSearch("");
   setParticipantSearch("");
   clearDashboardSearchFocus();
 }
@@ -3476,13 +4896,78 @@ function ignoreChangesAndClose() {
     closeHistoryMeetingInline();
   }
 }
-const filteredEmployees = employees.filter((employee) => {
-  const search = employeeSearch.toLowerCase();
+const collaboratorSearchText = collaboratorSearch.toLowerCase().trim();
+const normalizedMembers = organizationMembers.map((member) => {
+  const fullName =
+    member.full_name ||
+    `${member.first_name || ""} ${member.last_name || ""}`.trim() ||
+    member.email ||
+    "Membre";
 
-  return (
-    employee.name.toLowerCase().includes(search) ||
-    employee.role.toLowerCase().includes(search)
-  );
+  return {
+    type: "member" as const,
+    key: `member-${member.id}`,
+    id: member.id,
+    firstName: member.first_name || fullName.split(" ")[0] || "",
+    lastName:
+      member.last_name ||
+      fullName.split(" ").slice(1).join(" ") ||
+      "",
+    displayName: fullName,
+    email: member.email || "",
+    jobTitle: member.job_title || "",
+    role: member.role || "COLLABORATEUR",
+    status: member.status === "suspended" ? "Suspendu" : "Actif",
+    joinedAt: member.created_at,
+    raw: member,
+  };
+});
+const normalizedInvitations = organizationInvitations.map((invitation) => ({
+  type: "invitation" as const,
+  key: `invitation-${invitation.id}`,
+  id: String(invitation.id),
+  firstName: invitation.first_name || "",
+  lastName: invitation.last_name || "",
+  displayName:
+    `${invitation.first_name || ""} ${invitation.last_name || ""}`.trim() ||
+    invitation.email,
+  email: invitation.email,
+  jobTitle: invitation.job_title || "",
+  role: invitation.role,
+  status:
+    invitation.status === "accepted"
+      ? "Invitation acceptée"
+      : "Invitation envoyée",
+  joinedAt: invitation.created_at,
+  raw: invitation,
+}));
+const filteredCollaborators = [
+  ...normalizedMembers,
+  ...normalizedInvitations.filter((invitation) => invitation.raw.status !== "accepted"),
+].filter((collaborator) => {
+  const searchableText = [
+    collaborator.firstName,
+    collaborator.lastName,
+    collaborator.displayName,
+    collaborator.email,
+    collaborator.jobTitle,
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const matchesSearch =
+    !collaboratorSearchText || searchableText.includes(collaboratorSearchText);
+  const matchesFilter =
+    collaboratorFilter === "all" ||
+    (collaboratorFilter === "admins" && collaborator.role === "ADMIN") ||
+    (collaboratorFilter === "managers" && collaborator.role === "MANAGER") ||
+    (collaboratorFilter === "collaborators" &&
+      collaborator.role === "COLLABORATEUR") ||
+    (collaboratorFilter === "pending" &&
+      collaborator.type === "invitation" &&
+      collaborator.raw.status === "pending");
+
+  return matchesSearch && matchesFilter;
 });
 const filteredParticipantEmployees = employees.filter((employee) => {
   const search = participantSearch.toLowerCase();
@@ -3579,6 +5064,281 @@ function getEmployeeSearchText(employee: Employee) {
     .toLowerCase();
 }
 
+function getMeetingAuthorName(meeting: Meeting) {
+  if (!meeting.user_id) return null;
+
+  const member = organizationMembers.find(
+    (currentMember) => currentMember.id === meeting.user_id
+  );
+
+  return member?.full_name || member?.email || null;
+}
+
+function buildCompanyMemoryCorpus() {
+  return meetings.map((meeting) => {
+    const participants = meetingParticipantsByMeetingId[meeting.id] || [];
+    const meetingTasks = getMeetingTasks(meeting.id);
+    const folder = getMeetingFolderById(meeting.folder_id);
+
+    return {
+      meeting_id: meeting.id,
+      title: meeting.title,
+      date: meeting.created_at,
+      author: getMeetingAuthorName(meeting),
+      folder: folder?.name || null,
+      report: meeting.report,
+      participants: participants.map((participant) => ({
+        name: participant.name,
+        role: participant.role,
+        email: participant.email,
+      })),
+      tasks: meetingTasks.map((task) => ({
+        action: task.action,
+        responsible: task.responsible,
+        due_date: task.due_date,
+        status: normalizeTaskStatus(task.status),
+        priority: task.priority || null,
+      })),
+    };
+  });
+}
+
+function isAssistantQuestion(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (!normalizedQuery) return false;
+
+  return (
+    normalizedQuery.includes("?") ||
+    /^(qui|que|quoi|quand|où|ou|comment|pourquoi|combien|quelles?|résume|resume|montre|liste|affiche|donne|retrouve)\b/.test(
+      normalizedQuery
+    ) ||
+    normalizedQuery.split(/\s+/).length >= 5
+  );
+}
+
+function getQuickCommand(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (!normalizedQuery) return null;
+
+  if (
+    ["créer une réunion", "creer une reunion", "nouvelle réunion", "nouvelle reunion"].some(
+      (command) => command.startsWith(normalizedQuery) || normalizedQuery === command
+    )
+  ) {
+    return {
+      label: "Créer une réunion",
+      description: "Ouvrir l’onglet Nouvelle réunion",
+      action: () => navigateToSection("new"),
+    };
+  }
+
+  if (
+    ["inviter un membre", "inviter membre", "nouveau membre"].some(
+      (command) => command.startsWith(normalizedQuery) || normalizedQuery === command
+    )
+  ) {
+    return {
+      label: "Inviter un membre",
+      description: "Ouvrir le formulaire d’invitation",
+      action: () => {
+        setShowInviteModal(true);
+      },
+    };
+  }
+
+  if (
+    ["afficher les tâches en retard", "tâches en retard", "taches en retard"].some(
+      (command) => command.startsWith(normalizedQuery) || normalizedQuery === command
+    )
+  ) {
+    return {
+      label: "Afficher les tâches en retard",
+      description: "Filtrer le tableau de bord sur les tâches en retard",
+      action: () => {
+        clearDashboardSearchFocus();
+        setDashboardSelection("overdue");
+        window.setTimeout(() => {
+          document
+            .getElementById("dashboard-selection-panel")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 80);
+      },
+    };
+  }
+
+  if (
+    [
+      "afficher les réunions de cette semaine",
+      "afficher les reunions de cette semaine",
+      "réunions de cette semaine",
+      "reunions de cette semaine",
+    ].some(
+      (command) => command.startsWith(normalizedQuery) || normalizedQuery === command
+    )
+  ) {
+    return {
+      label: "Afficher les réunions de cette semaine",
+      description: "Filtrer le tableau de bord sur les réunions de la semaine",
+      action: () => {
+        clearDashboardSearchFocus();
+        setDashboardPeriod("week");
+        setDashboardSelection("meetings");
+        window.setTimeout(() => {
+          document
+            .getElementById("dashboard-selection-panel")
+            ?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 80);
+      },
+    };
+  }
+
+  if (
+    ["nouvelle tâche", "nouvelle tache", "créer une tâche", "creer une tache"].some(
+      (command) => command.startsWith(normalizedQuery) || normalizedQuery === command
+    )
+  ) {
+    return {
+      label: "Nouvelle tâche",
+      description: "Afficher les tâches ouvertes",
+      action: () => {
+        clearDashboardSearchFocus();
+        setDashboardSelection("todo");
+      },
+    };
+  }
+
+  return null;
+}
+
+function openEmployeeProfile(employee: Employee) {
+  closeAllMenus();
+  setEditingEmployee(employee);
+  setEmployeeForm({
+    name: employee.name,
+    role: employee.role,
+    email: employee.email,
+  });
+  setShowEmployeeModal(true);
+}
+
+function getDashboardSmartSuggestions() {
+  const baseSuggestions = [
+    "Qu’avons-nous décidé concernant le budget ?",
+    "Qui devait envoyer le devis ?",
+    "Quand avons-nous parlé du budget ?",
+    "Résumer les réunions de cette semaine.",
+  ];
+  const normalizedQuery = dashboardSearch.trim().toLowerCase();
+
+  if (!normalizedQuery) {
+    return baseSuggestions;
+  }
+
+  const meetingSuggestions = meetings
+    .filter((meeting) => getMeetingSearchText(meeting).includes(normalizedQuery))
+    .slice(0, 3)
+    .map((meeting) => `Que sait-on de ${meeting.title} ?`);
+  const taskSuggestions = dashboardTasks
+    .filter((task) => getTaskSearchText(task).includes(normalizedQuery))
+    .slice(0, 2)
+    .map((task) => `Quel est le suivi de la tâche "${task.action}" ?`);
+  const employeeSuggestions = employees
+    .filter((employee) => getEmployeeSearchText(employee).includes(normalizedQuery))
+    .slice(0, 2)
+    .map((employee) => `Montre-moi les réunions où ${employee.name} apparaît.`);
+  const folderSuggestions = meetingFolders
+    .filter((folder) =>
+      [folder.name, folder.description]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery)
+    )
+    .slice(0, 2)
+    .map((folder) => `Que sait-on du dossier ${folder.name} ?`);
+
+  return [
+    ...new Set([
+      ...meetingSuggestions,
+      ...taskSuggestions,
+      ...employeeSuggestions,
+      ...folderSuggestions,
+      ...baseSuggestions,
+    ]),
+  ].slice(0, 6);
+}
+
+async function searchCompanyMemory(queryOverride?: string) {
+  const query = (queryOverride ?? dashboardSearch).trim();
+
+  if (!query) {
+    setMemoryError("Saisissez une question pour interroger la mémoire.");
+    return;
+  }
+
+  if (meetings.length === 0) {
+    setMemoryAnswer("");
+    setMemorySources([]);
+    setMemoryError("Aucune réunion n’est encore disponible dans la mémoire.");
+    return;
+  }
+
+  setDashboardSearch(query);
+  setIsMemorySearching(true);
+  setMemoryError("");
+  setMemoryAnswer("");
+  setMemorySources([]);
+
+  try {
+    const response = await fetch("/api/memory-search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        corpus: buildCompanyMemoryCorpus(),
+      }),
+    });
+    const data = (await response.json()) as MemorySearchResponse;
+
+    if (!response.ok) {
+      throw new Error(data.error || "Recherche impossible pour le moment.");
+    }
+
+    setMemoryAnswer(data.answer);
+    setMemorySources(data.sources || []);
+    setMemoryRecentSearches((currentSearches) => [
+      query,
+      ...currentSearches.filter((currentQuery) => currentQuery !== query),
+    ].slice(0, 6));
+  } catch (error) {
+    console.error("Erreur recherche Mémoire :", error);
+    setMemoryError(
+      error instanceof Error
+        ? error.message
+        : "Erreur pendant la recherche dans la mémoire."
+    );
+  } finally {
+    setIsMemorySearching(false);
+  }
+}
+
+async function openMemorySource(source: MemorySource) {
+  const meeting = meetings.find(
+    (currentMeeting) => currentMeeting.id === source.meeting_id
+  );
+
+  if (!meeting) {
+    setMemoryError("Réunion introuvable dans l’espace de travail.");
+    return;
+  }
+
+  await openDashboardMeetingInHistory(meeting, "dashboard");
+}
+
 const filteredMeetings = meetings.filter((meeting) => {
   const search = meetingSearch.toLowerCase();
   const matchesSearch = !search || getMeetingSearchText(meeting).includes(search);
@@ -3608,7 +5368,7 @@ const folderModalMeetings =
 	
 	  const matchesStatus =
 	    taskStatusFilter === "all" ||
-	    (taskStatusFilter === "done" && taskStatus === "Fait") ||
+	    (taskStatusFilter === "done" && taskStatus === "Terminée") ||
 	    (taskStatusFilter === "progress" && taskStatus === "En cours") ||
 	    (taskStatusFilter === "todo" && taskStatus === "À faire");
 
@@ -3737,7 +5497,7 @@ const folderModalMeetings =
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <p className="text-sm font-semibold text-gray-600">
-                  Compte rendu ouvert
+                  Réunion ouverte
                 </p>
               </div>
 
@@ -3912,7 +5672,7 @@ const folderModalMeetings =
                   {historyTasks.length > 0 ? (
                   <>
                   {historyTasks.map((task) => {
-                    const isCompleted = normalizeTaskStatus(task.status) === "Fait";
+                    const isCompleted = normalizeTaskStatus(task.status) === "Terminée";
 
                     return (
                       <div
@@ -3966,112 +5726,305 @@ const folderModalMeetings =
 
   function renderAuthScreen() {
     const isSignup = authMode === "signup";
+    const isForgotPassword = authMode === "forgot";
+    const isUpdatingPassword = authMode === "update-password";
+    const authTitle = isSignup
+      ? "Créer un compte"
+      : isForgotPassword
+        ? "Réinitialiser le mot de passe"
+        : isUpdatingPassword
+          ? "Nouveau mot de passe"
+          : "Connexion";
 
     return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-10">
-        <section className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+      <main className="min-h-screen bg-gray-50 px-4 py-8 text-gray-950">
+        <section className="mx-auto grid min-h-[calc(100vh-4rem)] w-full max-w-6xl items-center gap-10 lg:grid-cols-[1fr_440px]">
+          <div className="px-2">
+            <div className="mb-10 inline-flex items-center gap-3 rounded-full border border-gray-200 bg-white px-4 py-2 shadow-sm">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full bg-black text-sm font-bold text-white">
+                B
+              </span>
+              <span className="text-sm font-semibold tracking-wide">Briefly</span>
+            </div>
+
+            <h1 className="max-w-2xl text-5xl font-bold tracking-tight sm:text-6xl">
+              Bienvenue sur Briefly
+            </h1>
+            <p className="mt-5 max-w-xl text-lg leading-8 text-gray-600">
+              L’assistant intelligent qui transforme vos réunions en actions.
+            </p>
+
+            <div className="mt-10 grid max-w-2xl gap-3 text-sm text-gray-600 sm:grid-cols-3">
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                Comptes rendus fiables
+              </div>
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                Tâches actionnables
+              </div>
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                Suivi sécurisé
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-xl shadow-gray-200/70 sm:p-8">
+            {!isForgotPassword && !isUpdatingPassword && (
+              <div className="mb-7 grid grid-cols-2 rounded-full bg-gray-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("login");
+                    setAuthError("");
+                    setAuthStatus("");
+                    setNeedsEmailConfirmation(false);
+                  }}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    authMode === "login"
+                      ? "bg-black text-white"
+                      : "text-gray-700 hover:bg-white"
+                  }`}
+                >
+                  Connexion
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("signup");
+                    setAuthError("");
+                    setAuthStatus("");
+                    setNeedsEmailConfirmation(false);
+                  }}
+                  className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    authMode === "signup"
+                      ? "bg-black text-white"
+                      : "text-gray-700 hover:bg-white"
+                  }`}
+                >
+                  Inscription
+                </button>
+              </div>
+            )}
+
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold">{authTitle}</h2>
+              <p className="mt-2 text-sm text-gray-600">
+                {isForgotPassword
+                  ? "Recevez un lien Supabase sécurisé pour réinitialiser votre mot de passe."
+                  : isUpdatingPassword
+                    ? "Saisissez votre nouveau mot de passe pour finaliser la récupération."
+                    : "Accédez à votre espace de travail Briefly."}
+              </p>
+            </div>
+
+            <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {isSignup && (
+                <label className="block text-sm font-medium text-gray-700">
+                  Nom
+                  <input
+                    type="text"
+                    value={authFullName}
+                    onChange={(e) => setAuthFullName(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                    placeholder="Votre nom"
+                    autoComplete="name"
+                  />
+                </label>
+              )}
+
+              {isUpdatingPassword ? (
+                <label className="block text-sm font-medium text-gray-700">
+                  Nouveau mot de passe
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                    placeholder="••••••••"
+                    autoComplete="new-password"
+                  />
+                </label>
+              ) : (
+                <label className="block text-sm font-medium text-gray-700">
+                  Email
+                  <input
+                    type="email"
+                    value={isForgotPassword ? resetEmail : authEmail}
+                    onChange={(e) =>
+                      isForgotPassword
+                        ? setResetEmail(e.target.value)
+                        : setAuthEmail(e.target.value)
+                    }
+                    className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                    placeholder="vous@entreprise.com"
+                    autoComplete="email"
+                  />
+                </label>
+              )}
+
+              {!isForgotPassword && !isUpdatingPassword && (
+                <label className="block text-sm font-medium text-gray-700">
+                  Mot de passe
+                  <input
+                    type="password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
+                    placeholder="••••••••"
+                    autoComplete={isSignup ? "new-password" : "current-password"}
+                  />
+                </label>
+              )}
+
+              {authMode === "login" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("forgot");
+                    setAuthError("");
+                    setAuthStatus("");
+                    setResetEmail(authEmail);
+                  }}
+                  className="text-sm font-medium text-gray-600 underline-offset-4 hover:text-black hover:underline"
+                >
+                  Mot de passe oublié ?
+                </button>
+              )}
+
+              {authError && (
+                <div className="space-y-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  <p>{authError}</p>
+                  {needsEmailConfirmation && (
+                    <button
+                      type="button"
+                      onClick={resendConfirmationEmail}
+                      className="font-semibold underline-offset-4 hover:underline"
+                    >
+                      Renvoyer l’email de confirmation
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {authStatus && (
+                <p className="rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
+                  {authStatus}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isAuthSubmitting}
+                className="w-full rounded-xl bg-black px-4 py-3 font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
+              >
+                {isAuthSubmitting
+                  ? "Patientez..."
+                  : isForgotPassword
+                    ? "Envoyer le lien"
+                    : isUpdatingPassword
+                      ? "Mettre à jour"
+                      : isSignup
+                        ? "Créer mon compte"
+                        : "Se connecter"}
+              </button>
+
+              {(isForgotPassword || isUpdatingPassword) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("login");
+                    setAuthError("");
+                    setAuthStatus("");
+                  }}
+                  className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-semibold transition hover:bg-gray-50"
+                >
+                  Retour à la connexion
+                </button>
+              )}
+            </form>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  function renderOrganizationOnboarding() {
+    return (
+      <main className="relative flex min-h-screen items-center justify-center bg-gray-50 px-4 py-10">
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="absolute left-5 top-5 rounded-full px-3 py-2 text-sm font-medium text-gray-600 transition hover:bg-white hover:text-black hover:shadow-sm"
+        >
+          ← Retour à la connexion
+        </button>
+
+        <section className="w-full max-w-2xl rounded-3xl border border-gray-200 bg-white p-6 shadow-xl shadow-gray-200/70 sm:p-8">
           <div className="mb-8 text-center">
-            <h1 className="text-4xl font-bold text-gray-950">Briefly</h1>
-            <p className="mt-3 text-sm text-gray-600">
-              Connectez-vous pour accéder à votre espace.
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-black font-bold text-white">
+              B
+            </div>
+            <h1 className="text-3xl font-bold">Bienvenue sur Briefly.</h1>
+            <p className="mt-3 text-gray-600">
+              Commençons par créer votre espace de travail.
             </p>
           </div>
 
-          <div className="mb-6 grid grid-cols-2 rounded-full bg-gray-100 p-1">
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode("login");
-                setAuthError("");
-                setAuthStatus("");
-              }}
-              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                authMode === "login"
-                  ? "bg-black text-white"
-                  : "text-gray-700 hover:bg-white"
-              }`}
-            >
-              Connexion
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setAuthMode("signup");
-                setAuthError("");
-                setAuthStatus("");
-              }}
-              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                authMode === "signup"
-                  ? "bg-black text-white"
-                  : "text-gray-700 hover:bg-white"
-              }`}
-            >
-              Inscription
-            </button>
-          </div>
-
-          <form onSubmit={handleAuthSubmit} className="space-y-4">
-            {isSignup && (
-              <label className="block text-sm font-medium text-gray-700">
-                Nom
-                <input
-                  type="text"
-                  value={authFullName}
-                  onChange={(e) => setAuthFullName(e.target.value)}
-                  className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
-                  placeholder="Votre nom"
-                  autoComplete="name"
-                />
-              </label>
-            )}
-
+          <form onSubmit={createOrganization} className="grid gap-4">
             <label className="block text-sm font-medium text-gray-700">
-              Email
+              Nom de l’entreprise
               <input
-                type="email"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
+                type="text"
+                value={organizationForm.name}
+                onChange={(e) =>
+                  setOrganizationForm((currentForm) => ({
+                    ...currentForm,
+                    name: e.target.value,
+                  }))
+                }
                 className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
-                placeholder="vous@entreprise.com"
-                autoComplete="email"
+                placeholder="Entreprise Martin"
               />
             </label>
 
             <label className="block text-sm font-medium text-gray-700">
-              Mot de passe
+              Secteur d’activité
               <input
-                type="password"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
+                type="text"
+                value={organizationForm.industry}
+                onChange={(e) =>
+                  setOrganizationForm((currentForm) => ({
+                    ...currentForm,
+                    industry: e.target.value,
+                  }))
+                }
                 className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 outline-none transition focus:border-gray-500"
-                placeholder="••••••••"
-                autoComplete={isSignup ? "new-password" : "current-password"}
+                placeholder="Conseil, industrie, services..."
               />
             </label>
 
-            {authError && (
+            {organizationError && (
               <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {authError}
+                {organizationError}
               </p>
             )}
-
-            {authStatus && (
+            {organizationStatus && (
               <p className="rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
-                {authStatus}
+                {organizationStatus}
               </p>
             )}
 
             <button
               type="submit"
-              disabled={isAuthSubmitting}
-              className="w-full rounded-xl bg-black px-4 py-3 font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
+              disabled={isOrganizationSaving}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-black px-5 py-3 font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
             >
-              {isAuthSubmitting
-                ? "Patientez..."
-                : isSignup
-                  ? "Créer mon compte"
-                  : "Se connecter"}
+              {isOrganizationSaving && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+              )}
+              {isOrganizationSaving
+                ? "Création de votre espace…"
+                : "Créer mon espace"}
             </button>
           </form>
         </section>
@@ -4093,19 +6046,102 @@ const folderModalMeetings =
     return renderAuthScreen();
   }
 
+  if (isProfileLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+        <div className="rounded-2xl border border-gray-200 bg-white px-6 py-5 text-sm text-gray-600 shadow-sm">
+          Chargement de votre espace...
+        </div>
+      </main>
+    );
+  }
+
+  if (!organization) {
+    return renderOrganizationOnboarding();
+  }
+
   return (
     <main className="relative min-h-screen flex flex-col items-center p-8">
-      <div className="absolute right-4 top-4 flex flex-wrap items-center justify-end gap-3 rounded-full border border-gray-200 bg-white px-3 py-2 text-sm shadow-sm">
-        <span className="max-w-[220px] truncate text-gray-600">
-          {authUser.email}
-        </span>
+      <div className="absolute left-4 top-4 rounded-full border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 shadow-sm">
+        🏢 {organization.name}
+      </div>
+
+      <div className="absolute right-4 top-4 z-40">
         <button
           type="button"
-          onClick={handleSignOut}
-          className="rounded-full bg-black px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-gray-800"
+          data-menu-trigger
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsUserMenuOpen((currentIsOpen) => !currentIsOpen);
+          }}
+          className="flex items-center gap-2 rounded-full border border-gray-200 bg-white px-2 py-2 text-sm shadow-sm transition hover:shadow-md"
+          aria-label="Ouvrir le menu utilisateur"
         >
-          Déconnexion
+          {renderUserAvatar("h-8 w-8")}
+          <span className="hidden max-w-[180px] truncate pr-2 text-gray-700 sm:block">
+            {getProfileDisplayName()}
+          </span>
         </button>
+
+        {isUserMenuOpen && (
+          <div
+            data-menu-content
+            onClick={(e) => e.stopPropagation()}
+            className="absolute right-0 mt-2 w-64 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xl"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setActiveSection("profile");
+                setIsUserMenuOpen(false);
+              }}
+              className="block w-full border-b border-gray-100 p-4 text-left transition hover:bg-gray-50"
+            >
+              <div className="flex items-center gap-3">
+                {renderUserAvatar("h-10 w-10")}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">
+                    {getProfileDisplayName()}
+                  </p>
+                  <p className="truncate text-xs text-gray-500">
+                    {authUser.email}
+                  </p>
+                </div>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveSection("organization");
+                setIsUserMenuOpen(false);
+              }}
+              className="block w-full px-4 py-3 text-left text-sm hover:bg-gray-50"
+            >
+              Entreprise
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveSection("organization");
+                setOrganizationStatus(
+                  "Les paramètres avancés arriveront dans une prochaine étape."
+                );
+                setIsUserMenuOpen(false);
+              }}
+              className="block w-full px-4 py-3 text-left text-sm hover:bg-gray-50"
+            >
+              Paramètres
+            </button>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="block w-full px-4 py-3 text-left text-sm text-red-600 hover:bg-red-50"
+            >
+              Déconnexion
+            </button>
+          </div>
+        )}
       </div>
 
       <h1 className="text-4xl font-bold mt-12 mb-6">Briefly</h1>
@@ -4118,9 +6154,9 @@ const folderModalMeetings =
 	        {[
 	          ["dashboard", "Tableau de bord"],
 	          ["new", "Nouvelle réunion"],
-	          ["report", "Compte rendu ouvert"],
+	          ["report", "Réunion ouverte"],
           ["history", "Historique"],
-          ["collaborators", "Collaborateurs"],
+          ["collaborators", "Membres"],
         ].map(([section, label]) => (
           <button
             key={section}
@@ -4140,35 +6176,245 @@ const folderModalMeetings =
           {copiedNotice}
         </p>
       )}
+
+      {activeSection === "profile" && (
+        <section className="w-full max-w-3xl p-2 sm:p-6">
+          <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                {renderUserAvatar("h-16 w-16")}
+                <div>
+                  <h2 className="text-2xl font-bold">
+                    {getProfileDisplayName()}
+                  </h2>
+                  <p className="text-sm text-gray-600">
+                    Profil utilisateur
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setActiveSection("dashboard")}
+                className="rounded-full border border-gray-200 px-4 py-2 text-sm font-semibold transition hover:bg-gray-50"
+              >
+                Retour
+              </button>
+            </div>
+
+            <form onSubmit={saveUserProfile} className="grid gap-4">
+              <div className="grid gap-4 rounded-2xl bg-gray-50 p-4 sm:grid-cols-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Nom
+                  <input
+                    type="text"
+                    value={profileForm.full_name}
+                    onChange={(e) =>
+                      setProfileForm((currentForm) => ({
+                        ...currentForm,
+                        full_name: e.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition focus:border-gray-500"
+                    placeholder="Votre nom complet"
+                  />
+                </label>
+
+                <label className="block text-sm font-medium text-gray-700">
+                  Fonction
+                  <input
+                    type="text"
+                    value={profileForm.job_title}
+                    onChange={(e) =>
+                      setProfileForm((currentForm) => ({
+                        ...currentForm,
+                        job_title: e.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-4 py-3 outline-none transition focus:border-gray-500"
+                    placeholder="Directeur financier"
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-4 rounded-2xl bg-gray-50 p-4 text-sm text-gray-600 sm:grid-cols-2">
+                <p>
+                  <span className="font-semibold text-gray-900">
+                    Entreprise
+                  </span>
+                  <br />
+                  {organization?.name || "Non rattaché"}
+                </p>
+                <p>
+                  <span className="font-semibold text-gray-900">Email</span>
+                  <br />
+                  {authUser.email}
+                </p>
+                <p>
+                  <span className="font-semibold text-gray-900">Avatar</span>
+                  <br />
+                  Initiales automatiques : {getUserInitials()}
+                </p>
+                <p>
+                  <span className="font-semibold text-gray-900">
+                    Compte créé le
+                  </span>
+                  <br />
+                  {userProfile?.created_at
+                    ? new Date(userProfile.created_at).toLocaleString("fr-FR")
+                    : "Non renseigné"}
+                </p>
+              </div>
+
+              {profileError && (
+                <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {profileError}
+                </p>
+              )}
+              {profileStatus && (
+                <p className="rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
+                  {profileStatus}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={isProfileSaving}
+                className="rounded-xl bg-black px-5 py-3 font-semibold text-white transition hover:bg-gray-800 disabled:bg-gray-400"
+              >
+                {isProfileSaving ? "Enregistrement..." : "Enregistrer"}
+              </button>
+            </form>
+          </div>
+        </section>
+      )}
+
+      {activeSection === "organization" && (
+        <section className="w-full max-w-3xl p-2 sm:p-6">
+          <div className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm sm:p-8">
+            <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-4">
+                {organization.logo_url ? (
+                  <span
+                    className="h-16 w-16 rounded-2xl bg-cover bg-center ring-1 ring-gray-200"
+                    style={{ backgroundImage: `url(${organization.logo_url})` }}
+                  />
+                ) : (
+                  <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-950 text-xl font-bold text-white">
+                    {organization.name.slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+                <div>
+                  <h2 className="text-2xl font-bold">Entreprise</h2>
+                  <p className="text-sm text-gray-600">
+                    Structure préparée pour les futures équipes Briefly.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setActiveSection("dashboard")}
+                className="rounded-full border border-gray-200 px-4 py-2 text-sm font-semibold transition hover:bg-gray-50"
+              >
+                Retour
+              </button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-2xl bg-gray-50 p-4">
+                <p className="text-xs font-semibold uppercase text-gray-500">Nom</p>
+                <p className="mt-1 font-semibold">{organization.name}</p>
+              </div>
+              <div className="rounded-2xl bg-gray-50 p-4">
+                <p className="text-xs font-semibold uppercase text-gray-500">
+                  Secteur
+                </p>
+                <p className="mt-1 font-semibold">
+                  {organization.industry || "Non renseigné"}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-gray-50 p-4">
+                <p className="text-xs font-semibold uppercase text-gray-500">
+                  Membres
+                </p>
+                <p className="mt-1 font-semibold">
+                  {organization.employee_count || "Non renseigné"}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-gray-50 p-4">
+                <p className="text-xs font-semibold uppercase text-gray-500">
+                  Créée le
+                </p>
+                <p className="mt-1 font-semibold">
+                  {new Date(organization.created_at).toLocaleDateString("fr-FR")}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-gray-50 p-4 sm:col-span-2">
+                <p className="text-xs font-semibold uppercase text-gray-500">
+                  Administrateur
+                </p>
+                <p className="mt-1 font-semibold">
+                  {getProfileDisplayName()} · {authUser.email}
+                </p>
+              </div>
+            </div>
+
+            {organizationStatus && (
+              <p className="mt-5 rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">
+                {organizationStatus}
+              </p>
+            )}
+
+            {canManageTeam() && (
+              <div className="mt-8 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrganizationError("");
+                    setOrganizationStatus("");
+                    setShowInviteModal(true);
+                  }}
+                  className="rounded-xl bg-black px-5 py-3 text-sm font-semibold text-white transition hover:bg-gray-800"
+                >
+                  Inviter un membre
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 	
-		      {activeSection === "dashboard" && (
-		        <section className="w-full max-w-5xl p-2 sm:p-6">
+	      {activeSection === "dashboard" && (
+	        <section className="w-full max-w-5xl p-2 sm:p-6">
 	          {(() => {
-	            const dashboardMeetings = meetings.filter((meeting) =>
-	              isDateInDashboardPeriod(meeting.created_at, dashboardPeriod)
-	            );
+              const periodMeetings = meetings.filter((meeting) =>
+                isDateInDashboardPeriod(meeting.created_at, dashboardPeriod)
+              );
 	            const periodTasks = getDashboardPeriodTasks();
-	            const todoTasks = periodTasks.filter(
-	              (task) => normalizeTaskStatus(task.status) === "À faire"
-	            );
 	            const inProgressTasks = periodTasks.filter(
-	              (task) => normalizeTaskStatus(task.status) === "En cours"
+	              (task) => getEffectiveTaskStatus(task) === "En cours"
 	            );
 	            const doneTasks = periodTasks.filter(
-	              (task) => normalizeTaskStatus(task.status) === "Fait"
+	              (task) => getEffectiveTaskStatus(task) === "Terminée"
 	            );
-	            const { overdueTasks } = getUrgentTasks(periodTasks);
+              const openTasks = periodTasks.filter(
+                (task) => getEffectiveTaskStatus(task) !== "Terminée"
+              );
+	            const overdueTasks = periodTasks.filter(
+                  (task) => getEffectiveTaskStatus(task) === "En retard"
+                );
 	            const statCards = [
 	              {
 		                key: "meetings" as const,
 		                label: "Réunions",
-		                value: dashboardMeetings.length,
+		                value: periodMeetings.length,
 		                tone: "border-gray-200 bg-white",
 		              },
 		              {
 		                key: "todo" as const,
-		                label: "Tâches à faire",
-		                value: todoTasks.length,
+		                label: "Tâches ouvertes",
+		                value: openTasks.length,
 		                tone: "border-red-200 bg-red-50",
 		              },
 		              {
@@ -4192,7 +6438,7 @@ const folderModalMeetings =
 		            ];
 		            const selectedTasks =
 		              dashboardSelection === "todo"
-		                ? todoTasks
+		                ? openTasks
 		                : dashboardSelection === "progress"
 		                  ? inProgressTasks
 		                  : dashboardSelection === "done"
@@ -4208,9 +6454,12 @@ const folderModalMeetings =
 		            const isShowingFocusedDashboardTask =
 		              Boolean(focusedDashboardTaskId) &&
 		              visibleSelectedTasks.length > 0;
-		            const selectedTitle =
-		              statCards.find((card) => card.key === dashboardSelection)
-		                ?.label || "";
+		            const selectedTitle = getDashboardTaskTitle(dashboardSelection);
+                    const selectedDashboardTask = selectedDashboardTaskId
+                      ? dashboardTasks.find(
+                          (task) => task.id === selectedDashboardTaskId
+                        ) || null
+                      : null;
 		            const normalizedDashboardSearch = dashboardSearch
 		              .trim()
 		              .toLowerCase();
@@ -4238,14 +6487,56 @@ const folderModalMeetings =
 		                      normalizedDashboardSearch
 		                    )
 		                  ),
+                          organizations: organization &&
+                            [organization.name, organization.industry]
+                              .filter(Boolean)
+                              .join(" ")
+                              .toLowerCase()
+                              .includes(normalizedDashboardSearch)
+                            ? [organization]
+                            : [],
+                          decisions: meetings
+                            .filter((meeting) =>
+                              meeting.report
+                                .toLowerCase()
+                                .includes(normalizedDashboardSearch)
+                            )
+                            .slice(0, 8)
+                            .map((meeting) => ({
+                              meeting,
+                              excerpt:
+                                meeting.report
+                                  .split("\n")
+                                  .find((line) =>
+                                    line
+                                      .toLowerCase()
+                                      .includes(normalizedDashboardSearch)
+                                  )
+                                  ?.replace(/^#\s*/, "")
+                                  .trim() || meeting.title,
+                            })),
 		                }
 		              : null;
 		            const dashboardSearchCount = dashboardSearchResults
 		              ? dashboardSearchResults.folders.length +
 		                dashboardSearchResults.meetings.length +
 		                dashboardSearchResults.tasks.length +
-		                dashboardSearchResults.employees.length
+		                dashboardSearchResults.employees.length +
+                        dashboardSearchResults.organizations.length +
+                        dashboardSearchResults.decisions.length
 		              : 0;
+                    const quickCommand = getQuickCommand(dashboardSearch);
+                    const shouldShowAssistant =
+                      Boolean(dashboardSearch.trim()) &&
+                      (isMemorySearching || memoryAnswer || memoryError);
+                    const recentMeetings = meetings.slice(0, 3);
+                    const openDashboardTasks = openTasks.slice(0, 3);
+                    const suggestedMembers = employees.slice(0, 3);
+                    const suggestedFolders = meetingFolders.slice(0, 3);
+                    const frequentQuestions = getDashboardSmartSuggestions().slice(
+                      0,
+                      4
+                    );
 
 		            return (
 		              <>
@@ -4268,6 +6559,7 @@ const folderModalMeetings =
 		                      }}
 	                      className="rounded border bg-white px-3 py-2"
 	                    >
+	                      <option value="today">Aujourd’hui</option>
 	                      <option value="week">Cette semaine</option>
 	                      <option value="month">Ce mois</option>
 	                      <option value="year">Cette année</option>
@@ -4276,18 +6568,286 @@ const folderModalMeetings =
 		                  </label>
 			                </div>
 
-		                <input
-                          ref={dashboardSearchInputRef}
-		                  type="text"
-		                  value={dashboardSearch}
-		                  onChange={(e) => {
-		                    setDashboardSearch(e.target.value);
-		                    setDashboardSelection(null);
-		                    clearDashboardSearchFocus();
-		                  }}
-		                  placeholder="Rechercher un dossier, une réunion, une tâche, un collaborateur..."
-		                  className="mb-8 w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-lg shadow-sm outline-none transition focus:border-gray-400"
-		                />
+                    <div
+                      ref={dashboardSearchContainerRef}
+                      className="relative mb-8"
+                    >
+		                  <input
+                        ref={dashboardSearchInputRef}
+		                    type="text"
+		                    value={dashboardSearch}
+		                    onFocus={() => setIsDashboardSearchPanelOpen(true)}
+		                    onChange={(e) => {
+		                      setDashboardSearch(e.target.value);
+		                      setDashboardSelection(null);
+		                      clearDashboardSearchFocus();
+                          setIsDashboardSearchPanelOpen(true);
+                          if (!e.target.value.trim()) {
+                            setMemoryAnswer("");
+                            setMemorySources([]);
+                            setMemoryError("");
+                          }
+		                    }}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter") return;
+
+                          const command = getQuickCommand(dashboardSearch);
+
+                          if (command) {
+                            e.preventDefault();
+                            command.action();
+                            setIsDashboardSearchPanelOpen(false);
+                            return;
+                          }
+
+                          if (isAssistantQuestion(dashboardSearch)) {
+                            e.preventDefault();
+                            searchCompanyMemory();
+                            setIsDashboardSearchPanelOpen(false);
+                          }
+                        }}
+		                    placeholder="Rechercher une réunion, une tâche ou poser une question..."
+		                    className="w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-lg shadow-sm outline-none transition focus:border-gray-400"
+		                  />
+
+                      {isDashboardSearchPanelOpen &&
+                        (!dashboardSearch.trim() || quickCommand) && (
+                        <div
+                          className="absolute left-0 right-0 top-full z-40 mt-2 max-h-[70vh] overflow-auto rounded-3xl border border-gray-200 bg-white p-4 text-left shadow-2xl"
+                          onMouseDown={(event) => event.preventDefault()}
+                        >
+                          {dashboardSearch.trim() && quickCommand ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                quickCommand.action();
+                                setIsDashboardSearchPanelOpen(false);
+                              }}
+                              className="mb-3 flex w-full items-center justify-between rounded-2xl bg-gray-50 px-4 py-3 text-left transition hover:bg-gray-100"
+                            >
+                              <span>
+                                <span className="block text-sm font-semibold text-gray-950">
+                                  {quickCommand.label}
+                                </span>
+                                <span className="block text-xs text-gray-500">
+                                  {quickCommand.description}
+                                </span>
+                              </span>
+                              <span className="text-sm text-gray-400">↵</span>
+                            </button>
+                          ) : null}
+
+                          {!dashboardSearch.trim() && (
+                            <div className="grid gap-4 md:grid-cols-2">
+                              <div>
+                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  📄 Réunions récentes
+                                </h4>
+                                <div className="space-y-1">
+                                  {recentMeetings.length === 0 ? (
+                                    <p className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                                      Aucune réunion récente.
+                                    </p>
+                                  ) : (
+                                    recentMeetings.map((meeting) => (
+                                      <button
+                                        key={meeting.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setIsDashboardSearchPanelOpen(false);
+                                          openDashboardMeetingInHistory(meeting);
+                                        }}
+                                        className="block w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-gray-50"
+                                      >
+                                        {meeting.title}
+                                      </button>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  👥 Membres
+                                </h4>
+                                <div className="space-y-1">
+                                  {suggestedMembers.length === 0 ? (
+                                    <p className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                                      Aucun membre.
+                                    </p>
+                                  ) : (
+                                    suggestedMembers.map((employee) => (
+                                      <button
+                                        key={employee.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setIsDashboardSearchPanelOpen(false);
+                                          openEmployeeProfile(employee);
+                                        }}
+                                        className="block w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-gray-50"
+                                      >
+                                        {employee.name}
+                                      </button>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  ✅ Tâches ouvertes
+                                </h4>
+                                <div className="space-y-1">
+                                  {openDashboardTasks.length === 0 ? (
+                                    <p className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                                      Aucune tâche ouverte.
+                                    </p>
+                                  ) : (
+                                    openDashboardTasks.map((task) => (
+                                      <button
+                                        key={task.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setIsDashboardSearchPanelOpen(false);
+                                          focusDashboardTask(task);
+                                        }}
+                                        className="block w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-gray-50"
+                                      >
+                                        {task.action}
+                                      </button>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  📁 Dossiers
+                                </h4>
+                                <div className="space-y-1">
+                                  {suggestedFolders.length === 0 ? (
+                                    <p className="rounded-xl bg-gray-50 px-3 py-2 text-sm text-gray-500">
+                                      Aucun dossier.
+                                    </p>
+                                  ) : (
+                                    suggestedFolders.map((folder) => (
+                                      <button
+                                        key={folder.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setDashboardSearch(folder.name);
+                                          setIsDashboardSearchPanelOpen(false);
+                                        }}
+                                        className="block w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-gray-50"
+                                      >
+                                        {folder.name}
+                                      </button>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="md:col-span-2">
+                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  💡 Questions fréquentes
+                                </h4>
+                                <div className="grid gap-1 sm:grid-cols-2">
+                                  {frequentQuestions.map((suggestion) => (
+                                    <button
+                                      key={suggestion}
+                                      type="button"
+                                      onClick={() => {
+                                        setDashboardSearch(suggestion);
+                                        setIsDashboardSearchPanelOpen(false);
+                                        searchCompanyMemory(suggestion);
+                                      }}
+                                      className="rounded-xl px-3 py-2 text-left text-sm transition hover:bg-gray-50"
+                                    >
+                                      {suggestion}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="md:col-span-2">
+                                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                  Commandes rapides
+                                </h4>
+                                <div className="grid gap-1 sm:grid-cols-2">
+                                  {[
+                                    "Créer une réunion",
+                                    "Créer une tâche",
+                                    "Inviter un membre",
+                                    "Afficher les tâches en retard",
+                                    "Afficher les réunions de cette semaine",
+                                  ].map((commandLabel) => {
+                                    const command = getQuickCommand(commandLabel);
+
+                                    return (
+                                      <button
+                                        key={commandLabel}
+                                        type="button"
+                                        onClick={() => {
+                                          command?.action();
+                                          setIsDashboardSearchPanelOpen(false);
+                                        }}
+                                        className="rounded-xl px-3 py-2 text-left text-sm font-medium transition hover:bg-gray-50"
+                                      >
+                                        {commandLabel}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              {memoryRecentSearches.length > 0 && (
+                                <div className="md:col-span-2">
+                                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                    Recherches récentes
+                                  </h4>
+                                  <div className="flex flex-wrap gap-2">
+                                    {memoryRecentSearches.map((recentQuery) => (
+                                      <span
+                                        key={recentQuery}
+                                        className="inline-flex items-center gap-1 rounded-full bg-gray-50 px-2.5 py-1 text-xs text-gray-600 ring-1 ring-gray-100"
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setDashboardSearch(recentQuery);
+                                            setIsDashboardSearchPanelOpen(false);
+                                            searchCompanyMemory(recentQuery);
+                                          }}
+                                          className="font-medium hover:text-gray-950"
+                                        >
+                                          {recentQuery}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          aria-label={`Supprimer ${recentQuery}`}
+                                          onClick={() =>
+                                            setMemoryRecentSearches(
+                                              (currentSearches) =>
+                                                currentSearches.filter(
+                                                  (currentQuery) =>
+                                                    currentQuery !== recentQuery
+                                                )
+                                            )
+                                          }
+                                          className="text-gray-400 hover:text-gray-900"
+                                        >
+                                          ×
+                                        </button>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
 
 		                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
 		                  {statCards.map((card) => (
@@ -4296,9 +6856,8 @@ const folderModalMeetings =
 		                      type="button"
 		                      onClick={() => {
 		                        clearDashboardSearchFocus();
-		                        setDashboardSelection((currentSelection) =>
-		                          currentSelection === card.key ? null : card.key
-		                        );
+                            setSelectedDashboardTaskId(null);
+		                        setDashboardSelection(card.key);
 		                      }}
 		                      className={`rounded-xl border p-5 text-left transition hover:-translate-y-0.5 hover:shadow-sm ${
 		                        card.tone
@@ -4313,6 +6872,86 @@ const folderModalMeetings =
 		                    </button>
 		                  ))}
 		                </div>
+
+                    {shouldShowAssistant && (
+                      <div className="mt-8 rounded-3xl border border-gray-200 bg-white p-5 shadow-sm sm:p-6">
+                        <div className="mb-4 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                              Assistant Briefly
+                            </p>
+                            <h3 className="mt-1 text-lg font-bold">
+                              Réponse à votre question
+                            </h3>
+                          </div>
+                          {isMemorySearching && (
+                            <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-600">
+                              Analyse...
+                            </span>
+                          )}
+                        </div>
+
+                        {isMemorySearching ? (
+                          <div className="space-y-2">
+                            <div className="h-3 w-full animate-pulse rounded bg-gray-100" />
+                            <div className="h-3 w-4/5 animate-pulse rounded bg-gray-100" />
+                            <div className="h-3 w-2/3 animate-pulse rounded bg-gray-100" />
+                          </div>
+                        ) : memoryError ? (
+                          <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+                            {memoryError}
+                          </p>
+                        ) : (
+                          <div className="whitespace-pre-wrap text-[15px] leading-7 text-gray-800">
+                            {memoryAnswer}
+                          </div>
+                        )}
+
+                        {!isMemorySearching && memorySources.length > 0 && (
+                          <div className="mt-5 border-t border-gray-100 pt-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                              <h4 className="text-sm font-semibold text-gray-900">
+                                Sources
+                              </h4>
+                              <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600">
+                                {memorySources.length}
+                              </span>
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {memorySources.map((source) => (
+                                <div
+                                  key={`${source.meeting_id}-${source.title}`}
+                                  className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+                                >
+                                  <p className="font-semibold text-gray-950">
+                                    📄 {source.title}
+                                  </p>
+                                  <p className="mt-1 text-xs text-gray-500">
+                                    {source.date
+                                      ? new Date(source.date).toLocaleString(
+                                          "fr-FR"
+                                        )
+                                      : "Date non renseignée"}
+                                  </p>
+                                  {source.excerpt && (
+                                    <p className="mt-2 line-clamp-3 text-sm leading-6 text-gray-700">
+                                      {source.excerpt}
+                                    </p>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => openMemorySource(source)}
+                                    className="mt-3 rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-800"
+                                  >
+                                    Ouvrir la réunion
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
 		                {dashboardSearchResults && (
 		                  <div className="mt-8 space-y-6">
@@ -4332,6 +6971,40 @@ const folderModalMeetings =
 		                      </div>
 		                    ) : (
 		                      <div className="grid gap-4 lg:grid-cols-2">
+                            {dashboardSearchResults.organizations.length > 0 && (
+                              <div className="rounded-xl bg-gray-50 p-4">
+                                <h4 className="mb-3 font-semibold">Entreprise</h4>
+                                <div className="space-y-2">
+                                  {dashboardSearchResults.organizations.map(
+                                    (currentOrganization) => (
+                                      <button
+                                        key={currentOrganization.id}
+                                        type="button"
+                                        onClick={() =>
+                                          navigateToSection("organization")
+                                        }
+                                        className="w-full cursor-pointer rounded-lg bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                                      >
+                                        <p className="font-medium">
+                                          {renderHighlightedText(
+                                            currentOrganization.name,
+                                            dashboardSearch
+                                          )}
+                                        </p>
+                                        <p className="text-sm text-gray-500">
+                                          {renderHighlightedText(
+                                            currentOrganization.industry ||
+                                              "Secteur non renseigné",
+                                            dashboardSearch
+                                          )}
+                                        </p>
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
 		                        {dashboardSearchResults.folders.length > 0 && (
 		                          <div className="rounded-xl bg-gray-50 p-4">
 		                            <h4 className="mb-3 font-semibold">Dossiers</h4>
@@ -4347,6 +7020,41 @@ const folderModalMeetings =
 		                            </div>
 		                          </div>
 		                        )}
+
+                            {dashboardSearchResults.decisions.length > 0 && (
+                              <div className="rounded-xl bg-gray-50 p-4">
+                                <h4 className="mb-3 font-semibold">
+                                  Décisions et contenus
+                                </h4>
+                                <div className="space-y-2">
+                                  {dashboardSearchResults.decisions.map(
+                                    ({ meeting, excerpt }) => (
+                                      <button
+                                        key={`decision-${meeting.id}-${excerpt}`}
+                                        type="button"
+                                        onClick={() =>
+                                          openDashboardMeetingInHistory(meeting)
+                                        }
+                                        className="w-full cursor-pointer rounded-lg bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                                      >
+                                        <p className="font-medium">
+                                          {renderHighlightedText(
+                                            excerpt,
+                                            dashboardSearch
+                                          )}
+                                        </p>
+                                        <p className="mt-1 text-sm text-gray-500">
+                                          {meeting.title} ·{" "}
+                                          {new Date(
+                                            meeting.created_at
+                                          ).toLocaleDateString("fr-FR")}
+                                        </p>
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </div>
+                            )}
 
 		                        {dashboardSearchResults.meetings.length > 0 && (
 		                          <div className="rounded-xl bg-gray-50 p-4">
@@ -4408,12 +7116,14 @@ const folderModalMeetings =
 
 		                        {dashboardSearchResults.employees.length > 0 && (
 		                          <div className="rounded-xl bg-gray-50 p-4">
-		                            <h4 className="mb-3 font-semibold">Collaborateurs</h4>
+		                            <h4 className="mb-3 font-semibold">Membres</h4>
 		                            <div className="space-y-2">
 		                              {dashboardSearchResults.employees.map((employee) => (
-		                                <div
+		                                <button
 		                                  key={employee.id}
-		                                  className="rounded-lg bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                                          type="button"
+                                          onClick={() => openEmployeeProfile(employee)}
+		                                  className="w-full cursor-pointer rounded-lg bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
 		                                >
 		                                  <p className="font-medium">
 		                                    {renderHighlightedText(
@@ -4427,7 +7137,7 @@ const folderModalMeetings =
 		                                      dashboardSearch
 		                                    )}
 		                                  </p>
-		                                </div>
+		                                </button>
 		                              ))}
 		                            </div>
 		                          </div>
@@ -4437,18 +7147,24 @@ const folderModalMeetings =
 		                  </div>
 		                )}
 
-		                {dashboardSelection && (
 		                  <div
 		                    id="dashboard-selection-panel"
-		                    className="mt-8 rounded-xl bg-white p-5 shadow-sm"
+		                    className="mt-8 rounded-3xl bg-white p-5 shadow-sm ring-1 ring-gray-100 sm:p-6"
 		                  >
 		                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-		                      <h3 className="text-lg font-bold">{selectedTitle}</h3>
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                              Liste
+                            </p>
+		                        <h3 className="mt-1 text-xl font-bold">
+                              {selectedTitle}
+                            </h3>
+                          </div>
 		                      {dashboardSelection === "overdue" && (
 		                        <button
 		                          type="button"
 		                          onClick={openReminderModal}
-		                          className="rounded border px-3 py-1 text-sm"
+		                          className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold transition hover:bg-gray-50"
 		                        >
 		                          Relancer
 		                        </button>
@@ -4471,13 +7187,13 @@ const folderModalMeetings =
 		                    )}
 
 		                    {dashboardSelection === "meetings" ? (
-		                      dashboardMeetings.length === 0 ? (
+		                      periodMeetings.length === 0 ? (
 		                        <p className="text-sm text-gray-600">
 		                          Aucune réunion sur cette période.
 		                        </p>
 		                      ) : (
 		                        <div className="space-y-2">
-		                          {dashboardMeetings.map((meeting) => (
+		                          {periodMeetings.map((meeting) => (
 		                            <button
 		                              key={meeting.id}
 		                              type="button"
@@ -4497,39 +7213,367 @@ const folderModalMeetings =
 		                        </div>
 		                      )
 		                    ) : visibleSelectedTasks.length === 0 ? (
-		                      <p className="text-sm text-gray-600">
-		                        Aucun élément à afficher.
+		                      <p className="rounded-2xl bg-gray-50 px-4 py-5 text-sm text-gray-600">
+		                        Aucune tâche à afficher.
 		                      </p>
 		                    ) : (
-		                      <div className="space-y-2">
-		                        {visibleSelectedTasks.map((task) => (
+		                      <div className="grid gap-3">
+		                        {visibleSelectedTasks.map((task) => {
+                              const responsibleEmployee =
+                                getTaskResponsibleEmployee(task);
+                              const responsibleName =
+                                responsibleEmployee?.name ||
+                                task.responsible ||
+                                "Non attribué";
+                              const taskMeeting = getTaskMeeting(task);
+                              const taskStatus = getEffectiveTaskStatus(task);
+
+                              return (
 		                          <div
 		                            key={task.id}
 		                            id={`dashboard-task-${task.id}`}
-		                            className={`rounded border p-3 transition duration-300 ${
+		                            className={`rounded-2xl border p-4 transition duration-300 hover:-translate-y-0.5 hover:shadow-md ${
 		                              highlightedDashboardTaskId === task.id
 		                                ? "border-yellow-300 bg-yellow-50 shadow-md"
-		                                : "bg-gray-50"
+		                                : "border-gray-100 bg-gray-50"
 		                            }`}
 		                          >
-		                            <div className="flex flex-wrap items-start justify-between gap-3">
-		                              <p className="font-semibold">{task.action}</p>
-		                              <span className="rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-gray-700">
-		                                {normalizeTaskStatus(task.status)}
-		                              </span>
-		                            </div>
-		                            <p className="text-sm text-gray-600">
-		                              Responsable : {task.responsible || "Non attribué"}
-		                            </p>
-		                            <p className="text-sm text-gray-600">
-		                              Échéance : {task.due_date || "Non renseignée"}
-		                            </p>
+                                  <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <h4 className="font-semibold text-gray-950">
+                                          {task.action}
+                                        </h4>
+                                        <span
+                                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getTaskStatusBadgeClass(
+                                            taskStatus
+                                          )}`}
+                                        >
+                                          {taskStatus}
+                                        </span>
+                                      </div>
+                                      <p className="mt-2 text-sm text-gray-500">
+                                        Réunion : {taskMeeting?.title || "Non renseignée"}
+                                      </p>
+                                    </div>
+
+                                    <div className="grid gap-3 text-sm text-gray-600 sm:grid-cols-2 lg:min-w-[420px]">
+                                      <div className="flex items-center gap-2">
+                                        {renderInitialsAvatar({
+                                          displayName: responsibleName,
+                                          email: responsibleEmployee?.email,
+                                          seed:
+                                            responsibleEmployee?.email ||
+                                            responsibleName,
+                                          sizeClass: "h-8 w-8",
+                                        })}
+                                        <span className="truncate">
+                                          {responsibleName}
+                                        </span>
+                                      </div>
+                                      <span
+                                        className={`inline-flex w-fit rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${getTaskPriorityClass(
+                                          task.priority
+                                        )}`}
+                                      >
+                                        {normalizeTaskPriority(task.priority)}
+                                      </span>
+                                      <span>
+                                        Échéance : {task.due_date || "Non renseignée"}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSelectedDashboardTaskId(task.id)
+                                        }
+                                        className="w-fit rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-800"
+                                      >
+                                        Voir
+                                      </button>
+                                    </div>
+                                  </div>
 		                          </div>
-		                        ))}
+                              );
+                            })}
 		                      </div>
 		                    )}
 		                  </div>
-		                )}
+
+                    <div className="mt-8 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-gray-100">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="text-lg font-bold">
+                            Journal d’activité
+                          </h3>
+                          <p className="text-sm text-gray-500">
+                            Les dernières actions de l’espace de travail.
+                          </p>
+                        </div>
+                      </div>
+
+                      {workspaceError && (
+                        <p className="mb-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700 ring-1 ring-amber-100">
+                          {workspaceError}
+                        </p>
+                      )}
+
+                      {activityLogs.length === 0 ? (
+                        <div className="rounded-xl bg-gray-50 px-4 py-5 text-sm text-gray-600">
+                          L’activité de l’entreprise apparaîtra ici dès qu’une
+                          réunion, une tâche ou une invitation sera créée.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {activityLogs.map((activity) => (
+                            <div
+                              key={activity.id}
+                              className="rounded-xl bg-gray-50 px-4 py-3"
+                            >
+                              <p className="text-sm font-medium text-gray-900">
+                                {activity.description}
+                              </p>
+                              <p className="mt-1 text-xs text-gray-500">
+                                {new Date(activity.created_at).toLocaleString(
+                                  "fr-FR"
+                                )}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedDashboardTask && (
+                      <div className="fixed inset-0 z-50 flex justify-end bg-black/20 p-3 sm:p-6">
+                        <button
+                          type="button"
+                          aria-label="Fermer le détail de la tâche"
+                          onClick={() => setSelectedDashboardTaskId(null)}
+                          className="absolute inset-0 cursor-default"
+                        />
+                        <aside className="relative flex h-full w-full max-w-xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+                          {(() => {
+                            const task = selectedDashboardTask;
+                            const responsibleEmployee =
+                              getTaskResponsibleEmployee(task);
+                            const responsibleName =
+                              responsibleEmployee?.name ||
+                              task.responsible ||
+                              "Non attribué";
+                            const taskMeeting = getTaskMeeting(task);
+                            const taskActivities = activityLogs.filter(
+                              (activity) =>
+                                activity.entity_type === "task" &&
+                                activity.entity_id === task.id
+                            );
+
+                            return (
+                              <>
+                                <div className="border-b border-gray-100 p-6">
+                                  <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                        Détail de la tâche
+                                      </p>
+                                      <h3 className="mt-2 text-2xl font-bold text-gray-950">
+                                        {task.action}
+                                      </h3>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSelectedDashboardTaskId(null)
+                                      }
+                                      className="rounded-full border border-gray-200 px-3 py-1 text-sm transition hover:bg-gray-50"
+                                    >
+                                      Fermer
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="flex-1 space-y-6 overflow-auto p-6">
+                                  <div className="rounded-2xl bg-gray-50 p-4">
+                                    <p className="text-sm font-semibold text-gray-950">
+                                      Description
+                                    </p>
+                                    <p className="mt-2 text-sm leading-6 text-gray-600">
+                                      {task.action}
+                                    </p>
+                                  </div>
+
+                                  <div className="grid gap-4 sm:grid-cols-2">
+                                    <label className="text-sm font-medium text-gray-700">
+                                      Responsable
+                                      <select
+                                        value={getTaskResponsibleEmployeeId(task)}
+                                        onChange={(event) => {
+                                          const employeeId = Number(
+                                            event.target.value
+                                          );
+                                          if (employeeId) {
+                                            updateTaskResponsible(task, employeeId);
+                                          }
+                                        }}
+                                        className="mt-2 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500"
+                                      >
+                                        <option value="">
+                                          Non attribué
+                                        </option>
+                                        {employees.map((employee) => (
+                                          <option
+                                            key={employee.id}
+                                            value={employee.id}
+                                          >
+                                            {employee.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+
+                                    <label className="text-sm font-medium text-gray-700">
+                                      Statut
+                                      <select
+                                        value={normalizeTaskStatus(task.status)}
+                                        onChange={(event) =>
+                                          updateTaskStatus(
+                                            task,
+                                            event.target.value as TaskStatus
+                                          )
+                                        }
+                                        className="mt-2 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500"
+                                      >
+                                        <option value="À faire">À faire</option>
+                                        <option value="En cours">En cours</option>
+                                        <option value="Terminée">Terminée</option>
+                                        <option value="En retard">En retard</option>
+                                      </select>
+                                    </label>
+
+                                    <label className="text-sm font-medium text-gray-700">
+                                      Priorité
+                                      <select
+                                        value={normalizeTaskPriority(task.priority)}
+                                        onChange={(event) =>
+                                          updateTaskPriority(
+                                            task,
+                                            event.target.value as Task["priority"]
+                                          )
+                                        }
+                                        className="mt-2 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500"
+                                      >
+                                        <option value="Basse">Basse</option>
+                                        <option value="Normale">Normale</option>
+                                        <option value="Haute">Haute</option>
+                                        <option value="Urgente">Urgente</option>
+                                      </select>
+                                    </label>
+
+                                    <label className="text-sm font-medium text-gray-700">
+                                      Date limite
+                                      <input
+                                        type="date"
+                                        value={task.due_date || ""}
+                                        onChange={(event) =>
+                                          updateTaskDueDate(
+                                            task.id,
+                                            event.target.value
+                                          )
+                                        }
+                                        className="mt-2 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-500"
+                                      />
+                                    </label>
+                                  </div>
+
+                                  <div className="rounded-2xl bg-gray-50 p-4">
+                                    <p className="text-sm font-semibold text-gray-950">
+                                      Responsable actuel
+                                    </p>
+                                    <div className="mt-3 flex items-center gap-3">
+                                      {renderInitialsAvatar({
+                                        displayName: responsibleName,
+                                        email: responsibleEmployee?.email,
+                                        seed:
+                                          responsibleEmployee?.email ||
+                                          responsibleName,
+                                      })}
+                                      <div>
+                                        <p className="text-sm font-medium text-gray-950">
+                                          {responsibleName}
+                                        </p>
+                                        <p className="text-xs text-gray-500">
+                                          {responsibleEmployee?.role ||
+                                            "Aucun poste renseigné"}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="rounded-2xl bg-gray-50 p-4">
+                                    <p className="text-sm font-semibold text-gray-950">
+                                      Réunion d’origine
+                                    </p>
+                                    <p className="mt-2 text-sm text-gray-600">
+                                      {taskMeeting?.title || "Non renseignée"}
+                                    </p>
+                                    {taskMeeting && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          openDashboardMeetingInHistory(
+                                            taskMeeting
+                                          )
+                                        }
+                                        className="mt-3 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold transition hover:bg-gray-50"
+                                      >
+                                        Ouvrir la réunion
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <div className="rounded-2xl bg-gray-50 p-4">
+                                    <p className="text-sm font-semibold text-gray-950">
+                                      Historique
+                                    </p>
+                                    {taskActivities.length === 0 ? (
+                                      <p className="mt-2 text-sm text-gray-500">
+                                        Aucun changement enregistré pour cette tâche.
+                                      </p>
+                                    ) : (
+                                      <div className="mt-3 space-y-2">
+                                        {taskActivities.map((activity) => (
+                                          <div
+                                            key={activity.id}
+                                            className="rounded-xl bg-white px-3 py-2"
+                                          >
+                                            <p className="text-sm text-gray-800">
+                                              {activity.description}
+                                            </p>
+                                            <p className="mt-1 text-xs text-gray-500">
+                                              {new Date(
+                                                activity.created_at
+                                              ).toLocaleString("fr-FR")}
+                                            </p>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="rounded-2xl bg-gray-50 p-4">
+                                    <p className="text-sm font-semibold text-gray-950">
+                                      Commentaires
+                                    </p>
+                                    <p className="mt-2 text-sm text-gray-500">
+                                      Les commentaires seront disponibles dans une prochaine évolution.
+                                    </p>
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </aside>
+                      </div>
+                    )}
 		              </>
 		            );
 	          })()}
@@ -4579,7 +7623,7 @@ const folderModalMeetings =
 
                         {invitedLiveParticipantIds.length === 0 ? (
                           <p className="text-sm text-gray-500">
-                            Aucun collaborateur invité
+                            Aucun membre invité
                           </p>
                         ) : (
                           <div className="space-y-2">
@@ -4661,7 +7705,7 @@ const folderModalMeetings =
                       }}
                       className="rounded border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-900 transition hover:bg-gray-100"
                     >
-                      ➕ Inviter des collaborateurs
+                      ➕ Inviter des membres
                     </button>
                     <button
                       type="button"
@@ -4675,7 +7719,17 @@ const folderModalMeetings =
               ) : (
                 <div className="mx-auto max-w-xl text-center">
                   {file ? (
-                    <div className="rounded-2xl border border-green-100 bg-green-50 p-6">
+                    <div className="relative rounded-2xl border border-green-100 bg-green-50 p-6">
+                      {message.includes("Enregistrement terminé") && (
+                        <button
+                          type="button"
+                          onClick={() => setShowDeleteRecordingConfirm(true)}
+                          className="absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-lg leading-none text-green-800 transition hover:bg-white/70"
+                          aria-label="Supprimer l’enregistrement temporaire"
+                        >
+                          ×
+                        </button>
+                      )}
                       <p className="text-lg font-bold text-green-800">
                         ✔ {message.includes("Enregistrement terminé")
                           ? "Enregistrement terminé"
@@ -4750,215 +7804,325 @@ const folderModalMeetings =
       )}
 
       {activeSection === "collaborators" && (
-        <section className="w-full max-w-3xl rounded-lg border p-6">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="text-2xl font-bold">Collaborateurs</h2>
+        <section className="w-full max-w-5xl p-2 sm:p-6">
+          <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-gray-100 sm:p-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-500">
+                  {organization?.name || "Espace Briefly"}
+                </p>
+                <h2 className="mt-1 text-3xl font-bold text-gray-950">
+                  Membres
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm text-gray-600">
+                  Gérez les membres de l’entreprise, les invitations et les
+                  rôles qui prépareront les prochaines permissions de Briefly.
+                </p>
+              </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                setEditingEmployee(null);
-                setEmployeeForm({ name: "", role: "", email: "" });
-                setShowEmployeeModal(true);
-              }}
-              className="px-3 py-1 border rounded text-sm"
-            >
-              Ajouter
-            </button>
-          </div>
-
-      {employees.length > 0 && (
-        <div className="border rounded-lg p-4 w-full">
-          <input
-  ref={employeeSearchInputRef}
-  type="text"
-  placeholder="🔍 Rechercher un collaborateur..."
-  value={employeeSearch}
-  onChange={(e) => setEmployeeSearch(e.target.value)}
-  className="w-full border rounded p-2 mb-3"
- />
-
-          {filteredEmployees.map((employee) => (
-            <div
-  key={employee.id}
-  className="flex items-center justify-between gap-2 mb-2"
->
-              <button
-  type="button"
-  onClick={(e) => {
-    e.preventDefault();
-    setSelectedEmployeeProfile(employee);
-  }}
-  className="text-left hover:underline"
->
-  {employee.name}
-  {employee.role ? ` (${employee.role})` : ""}
-</button>
-              <div className="relative">
-  <button
-    type="button"
-    data-menu-trigger
-    onClick={(e) => {
-      e.preventDefault();
-      e.stopPropagation();
-
-      const shouldOpenMenu = openEmployeeMenuId !== employee.id;
-
-      closeAllMenus();
-
-      if (shouldOpenMenu) {
-        setOpenEmployeeMenuId(employee.id);
-      }
-    }}
-    className="px-2 text-gray-500 hover:text-black"
-  >
-    ⋯
-  </button>
-
-  {openEmployeeMenuId === employee.id && (
-    <div
-      data-menu-content
-      onClick={(e) => e.stopPropagation()}
-      className="absolute right-0 mt-1 bg-white border rounded shadow z-50 min-w-[120px]"
-    >
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-        setEditingEmployee(employee);
-setEmployeeForm({
-  name: employee.name,
-  role: employee.role || "",
-  email: employee.email || "",
-});
-setShowEmployeeModal(true);
-closeAllMenus();
-        }}
-        className="block w-full text-left px-3 py-2 hover:bg-gray-100"
-      >
-        Modifier
-      </button>
-
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          closeAllMenus();
-          deleteEmployee(employee.id);
-        }}
-        className="block w-full text-left px-3 py-2 text-red-600 hover:bg-gray-100"
-      >
-        Supprimer
-      </button>
-    </div>
-  )}
-</div>
+              {canManageTeam() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOrganizationError("");
+                    setOrganizationStatus("");
+                    setInviteForm({
+                      first_name: "",
+                      last_name: "",
+                      email: "",
+                      job_title: "",
+                      role: "COLLABORATEUR",
+                    });
+                    setShowInviteModal(true);
+                  }}
+                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-gray-800"
+                >
+                  Inviter un membre
+                </button>
+              )}
             </div>
-          ))}
-        </div>
-      )}
 
-      {employees.length === 0 && (
-        <p className="text-sm text-gray-600">
-          Aucun collaborateur enregistré pour le moment.
-        </p>
-      )}
-      
-      {selectedEmployeeProfile &&
-  (() => {
-    const employeeTasks = tasks.filter(
-  (task) =>
-    task.responsible_employee_id === selectedEmployeeProfile.id
-);
+            {(organizationStatus || organizationError) && (
+              <div
+                className={`mt-5 rounded-xl px-4 py-3 text-sm ${
+                  organizationError
+                    ? "bg-red-50 text-red-700 ring-1 ring-red-100"
+                    : "bg-green-50 text-green-700 ring-1 ring-green-100"
+                }`}
+              >
+                {organizationError || organizationStatus}
+              </div>
+            )}
 
-	    const completedTasks = employeeTasks.filter(
-	      (task) => normalizeTaskStatus(task.status) === "Fait"
-	    );
-	
-	    const inProgressTasks = employeeTasks.filter(
-	      (task) => normalizeTaskStatus(task.status) === "En cours"
-	    );
-	
-	    const pendingTasks = employeeTasks.filter(
-	      (task) => normalizeTaskStatus(task.status) === "À faire"
-	    );
+            <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
+              <input
+                ref={employeeSearchInputRef}
+                type="text"
+                placeholder="Rechercher par prénom, nom, email ou fonction..."
+                value={collaboratorSearch}
+                onChange={(e) => setCollaboratorSearch(e.target.value)}
+                className="min-w-0 flex-1 rounded-xl border border-gray-200 px-4 py-3 text-sm outline-none transition focus:border-gray-500"
+              />
 
-    return (
-      <div className="mb-4 p-4 border rounded-lg bg-gray-50">
-        <div className="flex justify-between items-center mb-2">
-          <h4 className="font-bold">
-            {selectedEmployeeProfile.name}
-          </h4>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["all", "Tous"],
+                  ["admins", "Administrateurs"],
+                  ["managers", "Managers"],
+                  ["collaborators", "Membres"],
+                  ["pending", "Invitations en attente"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() =>
+                      setCollaboratorFilter(
+                        value as
+                          | "all"
+                          | "admins"
+                          | "managers"
+                          | "collaborators"
+                          | "pending"
+                      )
+                    }
+                    className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      collaboratorFilter === value
+                        ? "bg-black text-white"
+                        : "bg-gray-50 text-gray-700 ring-1 ring-gray-200 hover:bg-gray-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-          <button
-            onClick={() => setSelectedEmployeeProfile(null)}
-            className="text-gray-500"
-          >
-            ×
-          </button>
-        </div>
+            <div className="mt-6 space-y-3">
+              {filteredCollaborators.length === 0 && (
+                <div className="rounded-2xl bg-gray-50 px-5 py-8 text-center text-sm text-gray-500 ring-1 ring-gray-100">
+                  Aucun membre trouvé.
+                </div>
+              )}
 
-        <p>
-          <strong>Poste / Entreprise :</strong>{" "}
-          {selectedEmployeeProfile.role || "Non renseigné"}
-        </p>
+              {filteredCollaborators.map((collaborator) => {
+                const isSuspended = collaborator.status === "Suspendu";
+                const isPending = collaborator.type === "invitation";
 
-        <p>
-          <strong>Email :</strong>{" "}
-          {selectedEmployeeProfile.email || "Non renseigné"}
-        </p>
+                return (
+                  <div
+                    key={collaborator.key}
+                    className="flex flex-col gap-4 rounded-2xl bg-gray-50 p-4 ring-1 ring-gray-100 transition hover:bg-white hover:shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      {renderInitialsAvatar({
+                        displayName: collaborator.displayName,
+                        email: collaborator.email,
+                        seed: collaborator.id,
+                        sizeClass: "h-11 w-11 shrink-0",
+                      })}
 
-        <hr className="my-3" />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate font-semibold text-gray-950">
+                            {collaborator.displayName}
+                          </h3>
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                              isSuspended
+                                ? "bg-red-50 text-red-700 ring-1 ring-red-100"
+                                : isPending
+                                  ? "bg-amber-50 text-amber-700 ring-1 ring-amber-100"
+                                  : "bg-green-50 text-green-700 ring-1 ring-green-100"
+                            }`}
+                          >
+                            {collaborator.status}
+                          </span>
+                        </div>
+                        <p className="mt-1 truncate text-sm text-gray-600">
+                          {collaborator.jobTitle || "Fonction non renseignée"}
+                        </p>
+                        <p className="mt-1 truncate text-sm text-gray-500">
+                          {collaborator.email || "Email non renseigné"}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-400">
+                          Arrivée :{" "}
+                          {collaborator.joinedAt
+                            ? new Date(collaborator.joinedAt).toLocaleDateString(
+                                "fr-FR"
+                              )
+                            : "Non renseignée"}
+                        </p>
+                      </div>
+                    </div>
 
-        <p>📋 Tâches : {employeeTasks.length}</p>
-	        <p>🔴 À faire : {pendingTasks.length}</p>
-	        <p>🟠 En cours : {inProgressTasks.length}</p>
-	        <p>🟢 Terminées : {completedTasks.length}</p>
+                    <div className="flex items-center justify-between gap-3 sm:justify-end">
+                      <span className="rounded-full bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 ring-1 ring-gray-200">
+                        {collaborator.role}
+                      </span>
 
-	        {pendingTasks.length > 0 && (
-	          <>
-	            <h5 className="font-semibold mt-3">Tâches à faire</h5>
-            <ul className="list-disc list-inside text-sm">
-              {pendingTasks.map((task) => (
-                <li key={task.id}>{task.action}</li>
-              ))}
-            </ul>
-	          </>
-	        )}
-	
-	        {inProgressTasks.length > 0 && (
-	          <>
-	            <h5 className="font-semibold mt-3">Tâches en cours</h5>
-	            <ul className="list-disc list-inside text-sm">
-	              {inProgressTasks.map((task) => (
-	                <li key={task.id}>{task.action}</li>
-	              ))}
-	            </ul>
-	          </>
-	        )}
+                      {isCurrentUserAdmin() && (
+                        <div className="relative">
+                          <button
+                            type="button"
+                            data-menu-trigger
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
 
-        {completedTasks.length > 0 && (
-          <>
-            <h5 className="font-semibold mt-3">Tâches terminées</h5>
-            <ul className="list-disc list-inside text-sm text-gray-600">
-              {completedTasks.map((task) => (
-                <li key={task.id}>{task.action}</li>
-              ))}
-            </ul>
-          </>
-        )}
-      </div>
-    );
-  })()}
+                              const shouldOpenMenu =
+                                openCollaboratorMenuId !== collaborator.key;
+                              closeAllMenus();
 
+                              if (shouldOpenMenu) {
+                                setOpenCollaboratorMenuId(collaborator.key);
+                              }
+                            }}
+                            className="rounded-full px-3 py-1 text-xl leading-none text-gray-500 transition hover:bg-gray-100 hover:text-black"
+                            aria-label="Menu membre"
+                          >
+                            ⋯
+                          </button>
+
+                          {openCollaboratorMenuId === collaborator.key && (
+                            <div
+                              data-menu-content
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-xl border border-gray-200 bg-white py-1 text-sm shadow-lg"
+                            >
+                              {collaborator.type === "member" ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setProfileStatus("");
+                                      setOrganizationStatus(
+                                        "La modification détaillée des profils sera disponible dans les paramètres membres."
+                                      );
+                                      closeAllMenus();
+                                    }}
+                                    className="block w-full px-4 py-2 text-left hover:bg-gray-50"
+                                  >
+                                    Modifier
+                                  </button>
+                                  <div className="border-t border-gray-100 py-1">
+                                    {(["ADMIN", "MANAGER", "COLLABORATEUR"] as const).map(
+                                      (role) => (
+                                        <button
+                                          key={role}
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            closeAllMenus();
+                                            updateMemberRole(collaborator.raw, role);
+                                          }}
+                                          className="block w-full px-4 py-2 text-left hover:bg-gray-50"
+                                        >
+                                          Changer le rôle : {role}
+                                        </button>
+                                      )
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      closeAllMenus();
+                                      updateMemberStatus(
+                                        collaborator.raw,
+                                        collaborator.raw.status === "suspended"
+                                          ? "active"
+                                          : "suspended"
+                                      );
+                                    }}
+                                    className="block w-full px-4 py-2 text-left hover:bg-gray-50"
+                                  >
+                                    {collaborator.raw.status === "suspended"
+                                      ? "Réactiver"
+                                      : "Suspendre"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      closeAllMenus();
+                                      removeMember(collaborator.raw);
+                                    }}
+                                    className="block w-full px-4 py-2 text-left text-red-600 hover:bg-red-50"
+                                  >
+                                    Supprimer
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      closeAllMenus();
+                                      resendInvitation(collaborator.raw);
+                                    }}
+                                    className="block w-full px-4 py-2 text-left hover:bg-gray-50"
+                                  >
+                                    Renvoyer l’invitation
+                                  </button>
+                                  <div className="border-t border-gray-100 py-1">
+                                    {(["ADMIN", "MANAGER", "COLLABORATEUR"] as const).map(
+                                      (role) => (
+                                        <button
+                                          key={role}
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            closeAllMenus();
+                                            updateInvitationRole(
+                                              collaborator.raw,
+                                              role
+                                            );
+                                          }}
+                                          className="block w-full px-4 py-2 text-left hover:bg-gray-50"
+                                        >
+                                          Changer le rôle : {role}
+                                        </button>
+                                      )
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      closeAllMenus();
+                                      revokeInvitation(collaborator.raw);
+                                    }}
+                                    className="block w-full px-4 py-2 text-left text-red-600 hover:bg-red-50"
+                                  >
+                                    Supprimer
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </section>
       )}
 
       {activeSection === "report" && (
         <section className="w-full max-w-3xl rounded-lg border p-6">
-          <h2 className="mb-4 text-2xl font-bold">Compte rendu ouvert</h2>
+          <h2 className="mb-4 text-2xl font-bold">Réunion ouverte</h2>
 
           {!message && !reportError && (
             <p className="text-sm text-gray-600">
@@ -5138,6 +8302,106 @@ closeAllMenus();
        )}
 	     {renderReportContent(message)}
 
+  <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h3 className="text-lg font-bold">
+          Tâches détectées automatiquement
+        </h3>
+        <p className="mt-1 text-sm text-gray-500">
+          Validez uniquement les actions réellement à créer.
+        </p>
+      </div>
+
+      {pendingDetectedTasks.length > 0 && (
+        <button
+          type="button"
+          onClick={() => createDetectedTasks(pendingDetectedTasks)}
+          disabled={creatingDetectedTaskIds.length > 0}
+          className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
+        >
+          Créer toutes les tâches
+        </button>
+      )}
+    </div>
+
+    {pendingDetectedTasks.length === 0 ? (
+      <p className="rounded-xl bg-gray-50 px-4 py-4 text-sm text-gray-600">
+        Aucune tâche détectée pendant cette réunion.
+      </p>
+    ) : (
+      <div className="grid gap-3">
+        {pendingDetectedTasks.map((detectedTask) => {
+          const isCreating = creatingDetectedTaskIds.includes(
+            detectedTask.tempId
+          );
+
+          return (
+            <div
+              key={detectedTask.tempId}
+              className="rounded-2xl border border-gray-200 bg-gray-50 p-4"
+            >
+              <div className="grid gap-3 text-sm text-gray-700 sm:grid-cols-2">
+                <p>
+                  <span className="font-semibold text-gray-950">
+                    👤 Responsable
+                  </span>
+                  <br />
+                  {getDetectedTaskResponsibleLabel(detectedTask)}
+                </p>
+                <p>
+                  <span className="font-semibold text-gray-950">
+                    📅 Échéance
+                  </span>
+                  <br />
+                  {detectedTask.due_date || "Non renseignée"}
+                </p>
+                <p className="sm:col-span-2">
+                  <span className="font-semibold text-gray-950">
+                    📝 Description
+                  </span>
+                  <br />
+                  {detectedTask.action}
+                </p>
+                <p>
+                  <span className="font-semibold text-gray-950">
+                    🔥 Priorité
+                  </span>
+                  <br />
+                  {normalizeTaskPriority(detectedTask.priority)}
+                </p>
+                <p>
+                  <span className="font-semibold text-gray-950">Statut</span>
+                  <br />
+                  À faire
+                </p>
+              </div>
+
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => createDetectedTasks([detectedTask])}
+                  disabled={isCreating}
+                  className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
+                >
+                  ✅ {isCreating ? "Création..." : "Créer"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => ignoreDetectedTask(detectedTask.tempId)}
+                  disabled={isCreating}
+                  className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  ❌ Ignorer
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+
   <div className="mt-6 border rounded-lg bg-gray-50">
     <button
       type="button"
@@ -5204,7 +8468,7 @@ closeAllMenus();
   />
 </div>
 
-		          {task.completed_at && normalizeTaskStatus(task.status) === "Fait" && (
+		          {task.completed_at && normalizeTaskStatus(task.status) === "Terminée" && (
 		            <p className="text-sm text-green-700">
 		              Terminé le : {formatCompletedAt(task.completed_at)}
 		            </p>
@@ -5533,7 +8797,7 @@ closeAllMenus();
 
       {(() => {
         const pendingTasks = bulkTaskSource.filter(
-          (task) => normalizeTaskStatus(task.status) !== "Fait"
+          (task) => normalizeTaskStatus(task.status) !== "Terminée"
         );
         const groupedTasks = new Map<
           string,
@@ -5873,7 +9137,7 @@ closeAllMenus();
     <div className="max-h-[85vh] w-full max-w-2xl overflow-auto rounded-lg bg-white p-6">
       <div className="mb-4 flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold">Inviter des collaborateurs</h2>
+          <h2 className="text-2xl font-bold">Inviter des membres</h2>
           <p className="text-sm text-gray-600">
             Simulation prête pour de futurs liens d’invitation et la présence temps réel.
           </p>
@@ -5891,7 +9155,7 @@ closeAllMenus();
       <div className="space-y-2">
         {employees.length === 0 ? (
           <p className="text-sm text-gray-600">
-            Aucun collaborateur disponible.
+            Aucun membre disponible.
           </p>
         ) : (
           employees.map((employee) => {
@@ -5977,7 +9241,7 @@ closeAllMenus();
     <div className="w-full max-w-2xl rounded-lg bg-white p-6">
       <div className="mb-4 flex items-center justify-between gap-4">
 	        <h2 className="text-2xl font-bold">
-	          Quels collaborateurs étaient présents ?
+	          Quels membres étaient présents ?
 	        </h2>
 
         <button
@@ -6001,7 +9265,7 @@ closeAllMenus();
 	
 	      <input
         type="text"
-        placeholder="🔍 Rechercher un collaborateur..."
+        placeholder="🔍 Rechercher un membre..."
         value={participantSearch}
         onChange={(e) => setParticipantSearch(e.target.value)}
         className="mb-4 w-full rounded border p-2"
@@ -6009,7 +9273,7 @@ closeAllMenus();
 
       <div className="max-h-[45vh] space-y-2 overflow-auto">
         {filteredParticipantEmployees.length === 0 ? (
-          <p className="text-sm text-gray-600">Aucun collaborateur trouvé.</p>
+          <p className="text-sm text-gray-600">Aucun membre trouvé.</p>
         ) : (
           filteredParticipantEmployees.map((employee) => (
             <label key={employee.id} className="flex items-center gap-2">
@@ -6232,7 +9496,7 @@ closeAllMenus();
                   }
                   className="flex w-full items-center justify-between px-4 py-3 text-left font-semibold"
                 >
-                  <span>Autres collaborateurs ({otherEmployees.length})</span>
+                  <span>Autres membres ({otherEmployees.length})</span>
                   <span className="text-gray-500">
                     {isSendOthersOpen ? "▼" : "▶"}
                   </span>
@@ -6245,7 +9509,7 @@ closeAllMenus();
                     )
                   ) : (
                     <p className="rounded border bg-gray-50 p-3 text-sm text-gray-600">
-                      Aucun autre collaborateur.
+                      Aucun autre membre.
                     </p>
                   )}
                 </div>
@@ -6445,7 +9709,7 @@ closeAllMenus();
       className="bg-white p-6 rounded-lg shadow-lg w-full max-w-md"
     >
       <h2 className="text-xl font-bold mb-4">
-        {editingEmployee ? "Modifier le collaborateur" : "Ajouter un collaborateur"}
+        {editingEmployee ? "Modifier le membre" : "Ajouter un membre"}
       </h2>
 
       <div className="space-y-3">
@@ -6509,6 +9773,132 @@ closeAllMenus();
     </form>
   </div>
 )}
+      {showDeleteRecordingConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-lg font-bold text-gray-950">
+              Supprimer cet enregistrement ?
+            </h2>
+            <p className="mt-2 text-sm text-gray-600">
+              Êtes-vous sûr de vouloir supprimer cet enregistrement ?
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteRecordingConfirm(false)}
+                className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold transition hover:bg-gray-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={clearTemporaryRecording}
+                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
+              >
+                Supprimer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showInviteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <form
+            onSubmit={sendInvitation}
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <div className="mb-5">
+              <h2 className="text-xl font-bold">Inviter un membre</h2>
+              <p className="mt-1 text-sm text-gray-600">
+                Le membre recevra un email pour rejoindre{" "}
+                {organization?.name || "votre entreprise"}.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <input
+                type="text"
+                placeholder="Prénom"
+                value={inviteForm.first_name}
+                onChange={(e) =>
+                  setInviteForm((currentForm) => ({
+                    ...currentForm,
+                    first_name: e.target.value,
+                  }))
+                }
+                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none focus:border-gray-500"
+              />
+              <input
+                type="text"
+                placeholder="Nom"
+                value={inviteForm.last_name}
+                onChange={(e) =>
+                  setInviteForm((currentForm) => ({
+                    ...currentForm,
+                    last_name: e.target.value,
+                  }))
+                }
+                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none focus:border-gray-500"
+              />
+              <input
+                type="email"
+                placeholder="Email"
+                value={inviteForm.email}
+                onChange={(e) =>
+                  setInviteForm((currentForm) => ({
+                    ...currentForm,
+                    email: e.target.value,
+                  }))
+                }
+                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none focus:border-gray-500"
+              />
+              <input
+                type="text"
+                placeholder="Fonction"
+                value={inviteForm.job_title}
+                onChange={(e) =>
+                  setInviteForm((currentForm) => ({
+                    ...currentForm,
+                    job_title: e.target.value,
+                  }))
+                }
+                className="w-full rounded-xl border border-gray-200 px-4 py-3 outline-none focus:border-gray-500"
+              />
+              <select
+                value={inviteForm.role}
+                onChange={(e) =>
+                  setInviteForm((currentForm) => ({
+                    ...currentForm,
+                    role: e.target.value as OrganizationRole,
+                  }))
+                }
+                className="w-full rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none focus:border-gray-500"
+              >
+                <option value="COLLABORATEUR">Membre</option>
+                <option value="MANAGER">Manager</option>
+                <option value="ADMIN">Administrateur</option>
+              </select>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowInviteModal(false)}
+                className="rounded-xl border border-gray-200 px-4 py-2 text-sm font-semibold"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+              >
+                Envoyer l’invitation
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   );
 }

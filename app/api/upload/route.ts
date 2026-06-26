@@ -4,11 +4,16 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+const MAX_AUDIO_CHUNK_BYTES = 20 * 1024 * 1024;
+const MAX_FINAL_SOURCE_CHARS = 65000;
+
 type GeneratedTask = {
   action: string;
   responsible: string | null;
   responsible_employee_id: number | null;
   due_date: string | null;
+  priority: string | null;
+  context: string | null;
 };
 
 type ReportSection = {
@@ -57,16 +62,6 @@ function dedupeLines(lines: string[]) {
   });
 }
 
-function isTaskSection(title: string) {
-  const normalizedTitle = normalizeText(title);
-
-  return (
-    normalizedTitle.includes("tache") ||
-    normalizedTitle.includes("action a realiser") ||
-    normalizedTitle.includes("actions a realiser")
-  );
-}
-
 function sanitizeReport(report: unknown) {
   const rawReport = cleanText(report);
 
@@ -110,7 +105,7 @@ function sanitizeReport(report: unknown) {
       content: dedupeLines(section.content).join("\n").trim(),
     }))
     .filter((section) => {
-      return section.title && section.content && !isTaskSection(section.title);
+      return section.title && section.content;
     });
 
   if (cleanedSections.length === 0) {
@@ -181,6 +176,8 @@ function sanitizeTasks(tasks: unknown): GeneratedTask[] {
         taskRecord.responsible_employee_id
       );
       const dueDate = sanitizeDueDate(taskRecord.due_date);
+      const priority = cleanText(taskRecord.priority) || null;
+      const context = cleanText(taskRecord.context) || null;
       const taskKey = [
         normalizeText(action),
         responsibleEmployeeId ?? normalizeText(responsible || ""),
@@ -198,6 +195,8 @@ function sanitizeTasks(tasks: unknown): GeneratedTask[] {
         responsible,
         responsible_employee_id: responsibleEmployeeId,
         due_date: dueDate,
+        priority,
+        context,
       };
     })
     .filter((task): task is GeneratedTask => Boolean(task));
@@ -213,6 +212,201 @@ function sanitizeTitle(title: unknown) {
   }
 
   return cleanedTitle.split(" ").slice(0, 8).join(" ");
+}
+
+function splitAudioFile(file: File) {
+  if (file.size <= MAX_AUDIO_CHUNK_BYTES) {
+    return [file];
+  }
+
+  const chunks: File[] = [];
+  const extension = file.name.includes(".")
+    ? `.${file.name.split(".").pop()}`
+    : "";
+  const baseName = file.name.replace(/\.[^.]+$/, "") || "audio";
+
+  for (let start = 0; start < file.size; start += MAX_AUDIO_CHUNK_BYTES) {
+    const end = Math.min(start + MAX_AUDIO_CHUNK_BYTES, file.size);
+    const blob = file.slice(start, end, file.type);
+    chunks.push(
+      new File([blob], `${baseName}-segment-${chunks.length + 1}${extension}`, {
+        type: file.type || "audio/webm",
+      })
+    );
+  }
+
+  return chunks;
+}
+
+async function transcribeAudioSegment(file: File, index: number, total: number) {
+  const transcription = await openai.audio.transcriptions.create({
+    file,
+    model: "whisper-1",
+    language: "fr",
+    prompt:
+      "Transcription de réunion professionnelle en français. Conserver les noms propres, acronymes, entreprises, dates, chiffres et termes métier. Ne pas inventer les passages inaudibles.",
+  });
+
+  const text = transcription.text.trim();
+  return total > 1 ? `[Segment ${index + 1}/${total}]\n${text}` : text;
+}
+
+async function transcribeAudioFile(file: File) {
+  const audioSegments = splitAudioFile(file);
+  const transcriptions: string[] = [];
+
+  for (let index = 0; index < audioSegments.length; index += 1) {
+    transcriptions.push(
+      await transcribeAudioSegment(audioSegments[index], index, audioSegments.length)
+    );
+  }
+
+  return transcriptions;
+}
+
+async function cleanTranscriptionSegment(rawText: string, index: number, total: number) {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content: `
+Tu es un correcteur de transcription de réunion.
+
+Objectif : produire une transcription lisible, ponctuée et fidèle.
+
+Règles :
+- Corrige la ponctuation, les majuscules et les erreurs évidentes de transcription.
+- Supprime les hésitations sans valeur ("euh", "hum", répétitions immédiates, faux départs).
+- Conserve les noms propres, acronymes, chiffres, dates, montants et termes métier.
+- Ne réécris pas le sens et n'ajoute aucune information.
+- Si un passage est incompréhensible, écris [inaudible] au lieu d'inventer.
+- Si une phrase reste ambiguë, conserve l'ambiguïté.
+- Garde un style transcription, pas compte rendu.
+Retourne uniquement la transcription nettoyée.
+`,
+      },
+      {
+        role: "user",
+        content: `Segment ${index + 1}/${total}\n\n${rawText}`,
+      },
+    ],
+  });
+
+  return cleanText(completion.choices[0].message.content) || rawText;
+}
+
+async function cleanTranscriptionSegments(rawSegments: string[]) {
+  const cleanedSegments: string[] = [];
+
+  for (let index = 0; index < rawSegments.length; index += 1) {
+    cleanedSegments.push(
+      await cleanTranscriptionSegment(rawSegments[index], index, rawSegments.length)
+    );
+  }
+
+  return cleanedSegments;
+}
+
+async function analyzeLongTranscriptionSegment({
+  text,
+  index,
+  total,
+  selectedParticipants,
+  employees,
+}: {
+  text: string;
+  index: number;
+  total: number;
+  selectedParticipants: string;
+  employees: unknown[];
+}) {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0,
+    messages: [
+      {
+        role: "system",
+        content: `
+Tu prépares la fusion d'une très longue réunion.
+
+Analyse uniquement ce segment et retourne des notes structurées, factuelles et non rédigées.
+Ne conclus rien qui ne soit pas présent dans le segment.
+Si une information est incertaine, marque-la comme incertaine.
+
+Sections attendues :
+- Sujet et objectifs évoqués
+- Points clés
+- Décisions validées
+- Actions explicites avec responsable, échéance, priorité et contexte si présents
+- Questions ouvertes
+- Risques ou blocages
+- Prochaines étapes
+- Noms propres, acronymes et termes métier à conserver
+- Passages inaudibles ou ambigus
+`,
+      },
+      {
+        role: "user",
+        content: `
+Segment ${index + 1}/${total}
+
+Participants sélectionnés :
+${selectedParticipants}
+
+Membres disponibles :
+${JSON.stringify(employees, null, 2)}
+
+Transcription nettoyée :
+${text}
+`,
+      },
+    ],
+  });
+
+  return cleanText(completion.choices[0].message.content) || text;
+}
+
+async function buildFinalAnalysisSource({
+  cleanedSegments,
+  selectedParticipants,
+  employees,
+}: {
+  cleanedSegments: string[];
+  selectedParticipants: string;
+  employees: unknown[];
+}) {
+  const combinedTranscription = cleanedSegments.join("\n\n").trim();
+
+  if (combinedTranscription.length <= MAX_FINAL_SOURCE_CHARS) {
+    return {
+      label: "Transcription nettoyée de la réunion",
+      text: combinedTranscription,
+    };
+  }
+
+  const segmentAnalyses: string[] = [];
+
+  for (let index = 0; index < cleanedSegments.length; index += 1) {
+    segmentAnalyses.push(
+      await analyzeLongTranscriptionSegment({
+        text: cleanedSegments[index],
+        index,
+        total: cleanedSegments.length,
+        selectedParticipants,
+        employees,
+      })
+    );
+  }
+
+  return {
+    label:
+      "Notes structurées issues de segments transcrits et nettoyés de la réunion",
+    text: segmentAnalyses
+      .map((analysis, index) => `## Segment ${index + 1}\n${analysis}`)
+      .join("\n\n"),
+  };
 }
 
 export async function POST(request: Request) {
@@ -237,12 +431,11 @@ export async function POST(request: Request) {
         ? participants
         : "Aucun participant sélectionné";
 
-    const transcription = await openai.audio.transcriptions.create({
-      file,
-      model: "whisper-1",
-    });
-
-    const transcriptionText = transcription.text.trim();
+    const rawTranscriptionSegments = await transcribeAudioFile(file);
+    const cleanedTranscriptionSegments = await cleanTranscriptionSegments(
+      rawTranscriptionSegments
+    );
+    const transcriptionText = cleanedTranscriptionSegments.join("\n\n").trim();
     const today = new Date();
     const referenceDate = today.toISOString().slice(0, 10);
     const referenceWeekday = new Intl.DateTimeFormat("fr-FR", {
@@ -262,6 +455,12 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+
+    const finalAnalysisSource = await buildFinalAnalysisSource({
+      cleanedSegments: cleanedTranscriptionSegments,
+      selectedParticipants,
+      employees,
+    });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -284,13 +483,15 @@ Analyse la transcription et retourne uniquement un JSON valide avec cette struct
 
 {
   "title": "Titre court de la réunion",
-  "report": "# Résumé exécutif\n...\n# Points clés\n...\n# Décisions prises\n...\n# Risques ou points à clarifier\n...",
+  "report": "# Résumé exécutif\n...\n# Points clés\n...\n# Décisions validées\n...\n# Actions à réaliser\n...\n# Questions ouvertes\n...\n# Risques\n...\n# Prochaines étapes\n...",
   "tasks": [
     {
-      "action": "Action courte, précise et directement actionnable",
+      "action": "Action courte, précise, professionnelle et directement actionnable",
       "responsible": "Nom du responsable si identifiable",
       "responsible_employee_id": 1,
-      "due_date": "YYYY-MM-DD ou null"
+      "due_date": "YYYY-MM-DD ou null",
+      "priority": "Haute, Normale, Basse ou null",
+      "context": "Contexte utile de l'action ou null"
     }
   ]
 }
@@ -304,10 +505,11 @@ Règles de rédaction du compte rendu :
 - Hiérarchise les informations : décisions, actions et échéances d'abord ; détails secondaires ensuite.
 - Retourne le compte rendu en Markdown.
 - Utilise "# Résumé exécutif" dans tous les cas.
-- Ajoute uniquement les sections utiles parmi : "# Points clés", "# Décisions prises", "# Risques ou points à clarifier", "# Questions ouvertes", "# Prochaines étapes".
+- Structure le compte rendu avec ces sections, uniquement lorsqu'elles sont utiles :
+  "# Points clés", "# Décisions validées", "# Actions à réaliser", "# Questions ouvertes", "# Risques", "# Prochaines étapes".
 - N'ajoute pas une section vide.
-- Ne jamais inclure une section "Actions à réaliser" dans le compte rendu : les tâches sont affichées séparément dans l'application.
-- Ne répète pas les tâches mot pour mot dans le compte rendu.
+- La section "# Actions à réaliser" doit synthétiser les actions importantes sans recopier mécaniquement tout le tableau des tâches.
+- Les tâches détaillées sont aussi retournées dans le tableau JSON tasks pour compatibilité avec l'application.
 - Pour les décisions, risques, budget, blocages, questions ouvertes et prochaines étapes : mentionne seulement ce qui a réellement été évoqué.
 - Si aucune décision claire n'a été prise, n'invente pas de décision. Si cela améliore la compréhension, écris : "Aucune décision claire n’a été prise pendant cette réunion."
 - Si aucun risque n'a été évoqué, n'écris pas "Aucun risque majeur n’a été identifié" sauf si la réunion a explicitement traité les risques. Préfère omettre la section.
@@ -320,20 +522,26 @@ Règles d'extraction des tâches :
 - Si aucune action n'est identifiable, retourne [].
 - Reformule chaque tâche pour qu'elle soit précise, courte et directement actionnable.
 - Chaque tâche doit contenir autant que possible l'action, le contexte utile, le responsable et l'échéance, mais uniquement si ces informations existent réellement.
+- Déduis une priorité uniquement si le contenu de la réunion le justifie clairement :
+  "Haute" = urgent, bloquant, proche échéance ou décision critique ;
+  "Normale" = action importante mais non bloquante ou priorité non explicitement critique ;
+  "Basse" = action de suivi ou confort.
+  Si la priorité n'est pas claire, mets priority à "Normale".
+- Le champ context doit expliquer brièvement pourquoi l'action est nécessaire, uniquement si le contexte est évoqué.
 - Une bonne tâche ressemble à : "Envoyer le devis au client afin de permettre la validation du projet avant le 30 juin."
 - Ne crée jamais une tâche implicite ou probable.
 - Ne regroupe pas plusieurs actions différentes dans une seule tâche.
-- Conserve le responsable et l'échéance uniquement s'ils sont identifiables dans la transcription ou par correspondance fiable avec les collaborateurs.
+- Conserve le responsable et l'échéance uniquement s'ils sont identifiables dans la transcription ou par correspondance fiable avec les membres.
 - Toute échéance dans tasks.due_date doit être convertie en YYYY-MM-DD. Ne retourne jamais "demain", "vendredi", "fin du mois" ou une autre expression textuelle dans due_date.
 
 Attribution des responsables :
-Pour chaque tâche, attribue responsible_employee_id uniquement si tu es suffisamment certain du collaborateur concerné.
-Utilise la liste des collaborateurs disponibles, leur nom, leur email et leur poste pour choisir le bon identifiant.
+Pour chaque tâche, attribue responsible_employee_id uniquement si tu es suffisamment certain du membre concerné.
+Utilise la liste des membres disponibles, leur nom, leur email et leur poste pour choisir le bon identifiant.
 
 Pour déterminer le responsable :
 1. Cherche d'abord un prénom, un nom ou un nom complet explicitement cité dans la transcription.
-2. Si plusieurs collaborateurs correspondent au même prénom ou nom, utilise leur poste et le contenu de la tâche pour choisir le plus cohérent.
-3. Si aucun nom n'est cité, attribue la tâche au collaborateur dont le rôle est le plus adapté uniquement si la correspondance est très claire.
+2. Si plusieurs membres correspondent au même prénom ou nom, utilise leur poste et le contenu de la tâche pour choisir le plus cohérent.
+3. Si aucun nom n'est cité, attribue la tâche au membre dont le rôle est le plus adapté uniquement si la correspondance est très claire.
 4. Si le score de confiance est inférieur à 60, mets responsible à null et responsible_employee_id à null.
 
 Barème de confiance :
@@ -360,17 +568,17 @@ Convertis les échéances relatives en date ISO avec la date de référence :
 - "avant la fin du mois" = dernier jour du mois de la date de référence
 
 N'invente jamais d'échéance. Si la transcription ne contient pas d'indice temporel clair pour la tâche, mets due_date à null.
-Collaborateurs disponibles dans l'entreprise :
+Membres disponibles dans l'entreprise :
 
 ${JSON.stringify(employees, null, 2)}
 
 IMPORTANT :
 
-Chaque collaborateur possède un identifiant unique (id).
+Chaque membre possède un identifiant unique (id).
 
 Lorsqu'une action est attribuée à une personne, tu dois retourner :
 - responsible : le nom détecté
-- responsible_employee_id : l'identifiant exact du collaborateur
+- responsible_employee_id : l'identifiant exact du membre
 
 Pour déterminer la bonne personne, utilise dans cet ordre :
 
@@ -399,9 +607,10 @@ Participants présents sélectionnés dans l'application :
 
 ${selectedParticipants}
 
-Transcription de la réunion :
+Source d'analyse utilisée :
+${finalAnalysisSource.label}
 
-${transcriptionText}
+${finalAnalysisSource.text}
 `,
         },
       ],
